@@ -9,7 +9,7 @@ import { Button } from '../components/ui/Button'
 import { useAppData } from '../context/AppDataContext'
 
 export function CreateCampaignPage() {
-  const { brands, addCampaign } = useAppData()
+  const { brands, addCampaign, workerLinked } = useAppData()
   const navigate = useNavigate()
   const [brandId, setBrandId] = useState(brands[0]?.id ?? '')
   const [tag, setTag] = useState('newsletter')
@@ -40,7 +40,8 @@ export function CreateCampaignPage() {
           Create campaign
         </h1>
         <p className="mt-1 text-sm text-slate-500">
-          Queue an SMS send against an ActiveCampaign tag (mock only).
+          Queue an SMS send against an ActiveCampaign tag.
+          {workerLinked ? ' Connected to Cloudflare Worker.' : ' Running in local mock mode.'}
         </p>
       </div>
 

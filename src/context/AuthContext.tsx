@@ -6,17 +6,21 @@ import {
   useState,
   type ReactNode,
 } from 'react'
+import { loginWithWorker } from '../services/smsWorkerApi'
 
 type AuthContextValue = {
   email: string | null
+  token: string | null
   isAuthenticated: boolean
-  login: (email: string) => void
+  login: (input: { email: string; password: string }) => Promise<void>
   logout: () => void
+  setEmail: (next: string) => void
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
 
 const STORAGE_KEY = 'sms-dashboard-user-email'
+const TOKEN_STORAGE_KEY = 'sms-dashboard-auth-token'
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [email, setEmail] = useState<string | null>(() => {
@@ -26,8 +30,38 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return null
     }
   })
+  const [token, setToken] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem(TOKEN_STORAGE_KEY)
+    } catch {
+      return null
+    }
+  })
 
-  const login = useCallback((next: string) => {
+  const login = useCallback(async (input: { email: string; password: string }) => {
+    const res = await loginWithWorker(input)
+    setEmail(res.user.email)
+    setToken(res.token)
+    try {
+      localStorage.setItem(STORAGE_KEY, res.user.email)
+      localStorage.setItem(TOKEN_STORAGE_KEY, res.token)
+    } catch {
+      /* ignore */
+    }
+  }, [])
+
+  const logout = useCallback(() => {
+    setEmail(null)
+    setToken(null)
+    try {
+      localStorage.removeItem(STORAGE_KEY)
+      localStorage.removeItem(TOKEN_STORAGE_KEY)
+    } catch {
+      /* ignore */
+    }
+  }, [])
+
+  const setEmailOnly = useCallback((next: string) => {
     setEmail(next)
     try {
       localStorage.setItem(STORAGE_KEY, next)
@@ -36,23 +70,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  const logout = useCallback(() => {
-    setEmail(null)
-    try {
-      localStorage.removeItem(STORAGE_KEY)
-    } catch {
-      /* ignore */
-    }
-  }, [])
-
   const value = useMemo<AuthContextValue>(
     () => ({
       email,
-      isAuthenticated: Boolean(email),
+      token,
+      isAuthenticated: Boolean(email && token),
       login,
       logout,
+      setEmail: setEmailOnly,
     }),
-    [email, login, logout],
+    [email, token, login, logout, setEmailOnly],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

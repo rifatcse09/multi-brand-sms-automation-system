@@ -5,14 +5,45 @@ import { Card } from '../components/ui/Card'
 import { Label } from '../components/ui/Label'
 import { Input } from '../components/ui/Input'
 import { Button } from '../components/ui/Button'
+import {
+  forgotPasswordWithWorker,
+  resetPasswordWithWorker,
+} from '../services/smsWorkerApi'
 
 export function ResetPasswordPage() {
-  const [email, setEmail] = useState('')
+  const [email, setEmail] = useState('admin@spellsology.com')
+  const [code, setCode] = useState('')
   const [password, setPassword] = useState('')
   const [confirm, setConfirm] = useState('')
   const [done, setDone] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [sendingCode, setSendingCode] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [info, setInfo] = useState<string | null>(null)
+
+  const sendCode = () => {
+    setError(null)
+    setInfo(null)
+    if (!email.trim()) {
+      setError('Enter your email first.')
+      return
+    }
+    setSendingCode(true)
+    void (async () => {
+      try {
+        const res = await forgotPasswordWithWorker({ email: email.trim() })
+        if (res.sentToOwner) {
+          setInfo(`Reset code sent to owner number ${res.ownerPhoneMasked ?? ''}`.trim())
+        } else {
+          setInfo('Reset code requested. Check owner SMS logs.')
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to request reset code')
+      } finally {
+        setSendingCode(false)
+      }
+    })()
+  }
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault()
@@ -25,11 +56,25 @@ export function ResetPasswordPage() {
       setError('Passwords do not match.')
       return
     }
+    if (code.trim().length < 4) {
+      setError('Enter the reset code sent to owner number.')
+      return
+    }
     setLoading(true)
-    window.setTimeout(() => {
-      setLoading(false)
-      setDone(true)
-    }, 500)
+    void (async () => {
+      try {
+        await resetPasswordWithWorker({
+          email: email.trim(),
+          code: code.trim(),
+          newPassword: password,
+        })
+        setDone(true)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Reset failed')
+      } finally {
+        setLoading(false)
+      }
+    })()
   }
 
   return (
@@ -51,15 +96,37 @@ export function ResetPasswordPage() {
           </div>
         ) : (
           <form className="mt-8 space-y-4" onSubmit={handleSubmit}>
-            <div>
+            <div className="space-y-2">
               <Label htmlFor="reset-email">Email</Label>
+              <div className="flex gap-2">
+                <Input
+                  id="reset-email"
+                  name="email"
+                  type="email"
+                  autoComplete="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  required
+                />
+                <Button
+                  type="button"
+                  variant="secondary"
+                  loading={sendingCode}
+                  onClick={sendCode}
+                  className="shrink-0"
+                >
+                  Send code
+                </Button>
+              </div>
+            </div>
+            <div>
+              <Label htmlFor="reset-code">Reset code (SMS)</Label>
               <Input
-                id="reset-email"
-                name="email"
-                type="email"
-                autoComplete="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                id="reset-code"
+                name="reset-code"
+                value={code}
+                onChange={(e) => setCode(e.target.value)}
+                placeholder="Enter code sent to owner number"
                 required
               />
             </div>
@@ -90,6 +157,11 @@ export function ResetPasswordPage() {
             {error ? (
               <p className="text-sm text-red-600" role="alert">
                 {error}
+              </p>
+            ) : null}
+            {info ? (
+              <p className="text-sm text-blue-600" role="status">
+                {info}
               </p>
             ) : null}
             <Button type="submit" className="w-full" size="lg" loading={loading}>

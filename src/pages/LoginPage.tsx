@@ -13,9 +13,10 @@ export function LoginPage() {
   const location = useLocation()
   const from = (location.state as { from?: Location })?.from?.pathname ?? '/dashboard'
 
-  const [email, setEmail] = useState('ops@example.com')
-  const [password, setPassword] = useState('password')
+  const [email, setEmail] = useState('admin@spellsology.com')
+  const [password, setPassword] = useState('Admin12345!')
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   if (isAuthenticated) {
     return <Navigate to={from} replace />
@@ -23,12 +24,18 @@ export function LoginPage() {
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault()
+    setError(null)
     setLoading(true)
-    window.setTimeout(() => {
-      login(email.trim() || 'ops@example.com')
-      setLoading(false)
-      navigate(from, { replace: true })
-    }, 450)
+    void (async () => {
+      try {
+        await login({ email: email.trim(), password })
+        navigate(from, { replace: true })
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Login failed')
+      } finally {
+        setLoading(false)
+      }
+    })()
   }
 
   return (
@@ -75,6 +82,14 @@ export function LoginPage() {
           <Button type="submit" className="mt-2 w-full" size="lg" loading={loading}>
             Continue
           </Button>
+          {error ? (
+            <p className="text-center text-sm text-red-600" role="alert">
+              {error}
+            </p>
+          ) : null}
+          <p className="text-center text-xs text-slate-400">
+            Default: admin@spellsology.com / Admin12345!
+          </p>
         </form>
       </Card>
     </AuthLayout>

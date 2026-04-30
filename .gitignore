@@ -22,3 +22,8 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+.env
+
+# Cloudflare worker local config
+cloudflare-worker/wrangler.toml
+cloudflare-worker/.dev.vars

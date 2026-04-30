@@ -11,7 +11,7 @@ import { useAppData } from '../context/AppDataContext'
 import { useDelayedReady } from '../hooks/useDelayedReady'
 
 export function DashboardHome() {
-  const { campaigns, getBrandName } = useAppData()
+  const { campaigns, getBrandName, workerLinked } = useAppData()
   const ready = useDelayedReady()
 
   const totals = campaigns.reduce(
@@ -45,6 +45,9 @@ export function DashboardHome() {
           Dashboard
         </h1>
         <p className="mt-1 text-sm text-slate-500">Overview of SMS performance across brands.</p>
+        <p className="mt-2 text-xs text-slate-400">
+          Data source: {workerLinked ? 'Cloudflare Worker live metrics' : 'Local mock dataset'}
+        </p>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">

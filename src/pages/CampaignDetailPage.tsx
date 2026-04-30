@@ -90,24 +90,30 @@ export function CampaignDetailPage() {
 
       <Card padding="md">
         <CardHeader title="Batch progress" description="Parallel workers split the audience into batches." />
-        <div className="space-y-3">
-          {campaign.batches.map((b) => (
-            <div
-              key={b.id}
-              className="rounded-lg border border-slate-100 bg-white p-4 shadow-[var(--shadow-soft)]"
-            >
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="text-sm font-medium text-slate-900">{b.name}</p>
-                <p className="text-xs text-slate-500">
-                  {b.sent}/{b.total} sent · {b.failed} failed
-                </p>
+        {campaign.batches.length === 0 ? (
+          <p className="text-sm text-slate-500">
+            No batch data exposed by this backend response yet.
+          </p>
+        ) : (
+          <div className="space-y-3">
+            {campaign.batches.map((b) => (
+              <div
+                key={b.id}
+                className="rounded-lg border border-slate-100 bg-white p-4 shadow-[var(--shadow-soft)]"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-sm font-medium text-slate-900">{b.name}</p>
+                  <p className="text-xs text-slate-500">
+                    {b.sent}/{b.total} sent · {b.failed} failed
+                  </p>
+                </div>
+                <div className="mt-3">
+                  <ProgressBar value={b.progress} />
+                </div>
               </div>
-              <div className="mt-3">
-                <ProgressBar value={b.progress} />
-              </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
       </Card>
 
       <Card padding="none">
@@ -124,39 +130,47 @@ export function CampaignDetailPage() {
             </tr>
           </thead>
           <tbody>
-            {campaign.phones.map((p) => (
-              <tr key={p.id} className="hover:bg-slate-50/80">
-                <Td className="font-mono text-xs sm:text-sm">{p.phone}</Td>
-                <Td>
-                  <span
-                    className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${
-                      p.status === 'Success'
-                        ? 'bg-emerald-50 text-emerald-800 ring-1 ring-emerald-600/10'
-                        : 'bg-red-50 text-red-800 ring-1 ring-red-600/10'
-                    }`}
-                  >
-                    {p.status}
-                  </span>
-                </Td>
-                <Td className="hidden max-w-xs truncate text-xs text-slate-500 sm:table-cell">
-                  {p.error ?? '—'}
-                </Td>
-                <Td className="text-right">
-                  {p.status === 'Failed' ? (
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => retryPhone(campaign.id, p.id)}
-                    >
-                      <RefreshCw className="h-3.5 w-3.5" aria-hidden />
-                      Retry
-                    </Button>
-                  ) : (
-                    <span className="text-xs text-slate-400">—</span>
-                  )}
+            {campaign.phones.length === 0 ? (
+              <tr>
+                <Td colSpan={4} className="py-8 text-center text-sm text-slate-500">
+                  No phone-level rows are available from the current endpoint.
                 </Td>
               </tr>
-            ))}
+            ) : (
+              campaign.phones.map((p) => (
+                <tr key={p.id} className="hover:bg-slate-50/80">
+                  <Td className="font-mono text-xs sm:text-sm">{p.phone}</Td>
+                  <Td>
+                    <span
+                      className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${
+                        p.status === 'Success'
+                          ? 'bg-emerald-50 text-emerald-800 ring-1 ring-emerald-600/10'
+                          : 'bg-red-50 text-red-800 ring-1 ring-red-600/10'
+                      }`}
+                    >
+                      {p.status}
+                    </span>
+                  </Td>
+                  <Td className="hidden max-w-xs truncate text-xs text-slate-500 sm:table-cell">
+                    {p.error ?? '—'}
+                  </Td>
+                  <Td className="text-right">
+                    {p.status === 'Failed' ? (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => retryPhone(campaign.id, p.id)}
+                      >
+                        <RefreshCw className="h-3.5 w-3.5" aria-hidden />
+                        Retry
+                      </Button>
+                    ) : (
+                      <span className="text-xs text-slate-400">—</span>
+                    )}
+                  </Td>
+                </tr>
+              ))
+            )}
           </tbody>
         </TableWrap>
       </Card>

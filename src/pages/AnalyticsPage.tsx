@@ -1,5 +1,7 @@
+import { useEffect, useState } from 'react'
 import { Card, CardHeader } from '../components/ui/Card'
-import { analyticsMock } from '../data/mockData'
+import { fetchWorkerSentVsFailed, isWorkerConfigured } from '../services/smsWorkerApi'
+import { useDelayedReady } from '../hooks/useDelayedReady'
 
 function BarGroup({
   label,
@@ -34,8 +36,30 @@ function BarGroup({
 }
 
 export function AnalyticsPage() {
-  const { sentVsFailed } = analyticsMock
-  const maxBar = Math.max(...sentVsFailed.map((d) => d.sent + d.failed))
+  const ready = useDelayedReady(250)
+  const [sentVsFailed, setSentVsFailed] = useState<
+    Array<{ label: string; sent: number; failed: number }>
+  >([])
+
+  useEffect(() => {
+    if (!isWorkerConfigured()) return
+    void (async () => {
+      try {
+        const items = await fetchWorkerSentVsFailed()
+        setSentVsFailed(items)
+      } catch {
+        setSentVsFailed([])
+      }
+    })()
+  }, [])
+
+  const rows =
+    sentVsFailed.length > 0
+      ? sentVsFailed
+      : [
+          { label: 'No data', sent: 0, failed: 0 },
+        ]
+  const maxBar = Math.max(...rows.map((d) => d.sent + d.failed), 1)
 
   return (
     <div className="space-y-8">
@@ -43,7 +67,9 @@ export function AnalyticsPage() {
         <h1 className="text-xl font-semibold tracking-tight text-slate-900 sm:text-2xl">
           Analytics
         </h1>
-        <p className="mt-1 text-sm text-slate-500">Mock charts for weekly SMS volume and health.</p>
+        <p className="mt-1 text-sm text-slate-500">
+          Weekly SMS volume and health from backend analytics.
+        </p>
       </div>
 
       <Card padding="md">
@@ -60,9 +86,10 @@ export function AnalyticsPage() {
           </span>
         </div>
         <div className="flex items-end justify-between gap-1 sm:gap-2">
-          {sentVsFailed.map((d) => (
+          {ready &&
+            rows.map((d) => (
             <BarGroup key={d.label} label={d.label} sent={d.sent} failed={d.failed} max={maxBar} />
-          ))}
+            ))}
         </div>
       </Card>
 

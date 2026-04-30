@@ -1,0 +1,25 @@
+name = "sms"
+account_id = "REPLACE_WITH_ACCOUNT_ID"
+main = "src/index.ts"
+compatibility_date = "2026-04-23"
+
+kv_namespaces = [
+  { binding = "SMS_KV", id = "REPLACE_WITH_KV_ID" }
+]
+
+[[queues.producers]]
+binding = "CAMPAIGN_QUEUE"
+queue = "sms-campaign-queue"
+
+[[queues.consumers]]
+queue = "sms-campaign-queue"
+max_batch_size = 50
+max_batch_timeout = 10
+
+[vars]
+SEND_MODE = "mock"
+DEFAULT_BRAND_ID = "brand-default"
+DEFAULT_CONTACT_COUNT = "120"
+WORKER_BASE_URL = "https://your-worker.workers.dev"
+OWNER_PHONE = "+15551234567"
+DEFAULT_ADMIN_EMAIL = "admin@spellsology.com"

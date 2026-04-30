@@ -4,9 +4,10 @@ import { Label } from '../components/ui/Label'
 import { Input } from '../components/ui/Input'
 import { Button } from '../components/ui/Button'
 import { useAuth } from '../context/AuthContext'
+import { changePasswordWithWorker } from '../services/smsWorkerApi'
 
 export function SettingsPage() {
-  const { email, login } = useAuth()
+  const { email, token, setEmail } = useAuth()
   const [nextEmail, setNextEmail] = useState(email ?? '')
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
@@ -15,6 +16,7 @@ export function SettingsPage() {
   const [passwordSaved, setPasswordSaved] = useState(false)
   const [loadingEmail, setLoadingEmail] = useState(false)
   const [loadingPassword, setLoadingPassword] = useState(false)
+  const [errorPassword, setErrorPassword] = useState<string | null>(null)
 
   useEffect(() => {
     setNextEmail(email ?? '')
@@ -25,7 +27,7 @@ export function SettingsPage() {
     setLoadingEmail(true)
     setEmailSaved(false)
     window.setTimeout(() => {
-      login(nextEmail.trim())
+      setEmail(nextEmail.trim())
       setLoadingEmail(false)
       setEmailSaved(true)
     }, 400)
@@ -33,17 +35,32 @@ export function SettingsPage() {
 
   const savePassword = (e: FormEvent) => {
     e.preventDefault()
+    setErrorPassword(null)
     setPasswordSaved(false)
     if (newPassword.length < 8) return
     if (newPassword !== confirmPassword) return
+    if (!token) {
+      setErrorPassword('Session expired. Please log in again.')
+      return
+    }
     setLoadingPassword(true)
-    window.setTimeout(() => {
-      setLoadingPassword(false)
-      setPasswordSaved(true)
-      setCurrentPassword('')
-      setNewPassword('')
-      setConfirmPassword('')
-    }, 450)
+    void (async () => {
+      try {
+        await changePasswordWithWorker({
+          token,
+          currentPassword,
+          newPassword,
+        })
+        setPasswordSaved(true)
+        setCurrentPassword('')
+        setNewPassword('')
+        setConfirmPassword('')
+      } catch (err) {
+        setErrorPassword(err instanceof Error ? err.message : 'Failed to update password')
+      } finally {
+        setLoadingPassword(false)
+      }
+    })()
   }
 
   return (
@@ -111,7 +128,12 @@ export function SettingsPage() {
           </div>
           {passwordSaved ? (
             <p className="text-sm text-emerald-600" role="status">
-              Password change recorded (demo).
+              Password updated.
+            </p>
+          ) : null}
+          {errorPassword ? (
+            <p className="text-sm text-red-600" role="alert">
+              {errorPassword}
             </p>
           ) : null}
           <Button type="submit" loading={loadingPassword}>
