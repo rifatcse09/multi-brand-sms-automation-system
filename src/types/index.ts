@@ -29,6 +29,7 @@ export interface Campaign {
   status: CampaignStatus
   important: boolean
   createdAt: string
+  deletedAt?: string
   batches: Batch[]
   phones: PhoneResult[]
   /** Overall queue progress for running campaigns (0–100) */
@@ -40,7 +41,7 @@ export interface Brand {
   name: string
   twilioAccountSid: string
   twilioApiKey: string
-  twilioSecret: string
+  twilioAuthToken: string
   messagingServiceSid: string
   activeCampaignApiUrl: string
   activeCampaignApiKey: string

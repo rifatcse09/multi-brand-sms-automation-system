@@ -17,6 +17,7 @@ import {
   isWorkerConfigured,
   triggerWorkerBlast,
   updateWorkerBrand,
+  deleteWorkerCampaign,
 } from '../services/smsWorkerApi'
 
 let idSeq = 100
@@ -30,6 +31,7 @@ type AppDataContextValue = {
   brands: Brand[]
   campaigns: Campaign[]
   workerLinked: boolean
+  workerError: string | null
   addBrand: (brand: Omit<Brand, 'id'>) => void
   updateBrand: (id: string, patch: Partial<Brand>) => void
   deleteBrand: (id: string) => void
@@ -40,6 +42,7 @@ type AppDataContextValue = {
   }) => Campaign
   setCampaignImportant: (id: string, important: boolean) => void
   retryPhone: (campaignId: string, phoneId: string) => void
+  deleteCampaign: (campaignId: string) => void
   getBrandName: (id: string) => string
 }
 
@@ -49,6 +52,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
   const [brands, setBrands] = useState<Brand[]>([])
   const [campaigns, setCampaigns] = useState<Campaign[]>([])
   const [workerLinked, setWorkerLinked] = useState(false)
+  const [workerError, setWorkerError] = useState<string | null>(null)
   const workerEnabled = isWorkerConfigured()
 
   const mergeImportantFlag = useCallback((next: Campaign[]) => {
@@ -63,14 +67,14 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
 
   const syncCampaignsFromWorker = useCallback(async () => {
     if (!workerEnabled) return
-    const defaultBrandId = brands[0]?.id ?? 'brand-default'
+    const defaultBrandId = 'brand-default'
     try {
       const next = await fetchWorkerCampaigns(defaultBrandId)
       mergeImportantFlag(next)
     } catch {
-      /* keep local mock data if worker read fails */
+      setWorkerError('Unable to load campaigns from backend.')
     }
-  }, [brands, mergeImportantFlag, workerEnabled])
+  }, [mergeImportantFlag, workerEnabled])
 
   const syncBrandsFromWorker = useCallback(async () => {
     if (!workerEnabled) return
@@ -78,7 +82,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       const next = await fetchWorkerBrands()
       setBrands(next)
     } catch {
-      /* ignore */
+      setWorkerError('Unable to load brands from backend.')
     }
   }, [workerEnabled])
 
@@ -122,8 +126,9 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
           setBrands((prev) =>
             prev.map((b) => (b.id === optimistic.id ? created.brand : b)),
           )
+          setWorkerError(null)
         } catch {
-          setBrands((prev) => prev.filter((b) => b.id !== optimistic.id))
+          setWorkerError('Brand save failed on backend. Check Worker secret/env.')
         }
       })()
     }
@@ -132,7 +137,9 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
   const updateBrand = useCallback((id: string, patch: Partial<Brand>) => {
     setBrands((prev) => prev.map((b) => (b.id === id ? { ...b, ...patch } : b)))
     if (workerEnabled) {
-      void updateWorkerBrand(id, patch).catch(() => {})
+      void updateWorkerBrand(id, patch).catch(() => {
+        setWorkerError('Brand update failed on backend.')
+      })
     }
   }, [workerEnabled])
 
@@ -140,7 +147,9 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     setBrands((prev) => prev.filter((b) => b.id !== id))
     setCampaigns((prev) => prev.filter((c) => c.brandId !== id))
     if (workerEnabled) {
-      void deleteWorkerBrand(id).catch(() => {})
+      void deleteWorkerBrand(id).catch(() => {
+        setWorkerError('Brand delete failed on backend.')
+      })
     }
   }, [workerEnabled])
 
@@ -240,29 +249,42 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     )
   }, [])
 
+  const deleteCampaignLocal = useCallback((campaignId: string) => {
+    setCampaigns((prev) => prev.filter((c) => c.id !== campaignId))
+    if (workerEnabled) {
+      void deleteWorkerCampaign(campaignId).catch(() => {
+        setWorkerError('Campaign delete failed on backend.')
+      })
+    }
+  }, [workerEnabled])
+
   const value = useMemo(
     () => ({
       brands,
       campaigns,
       workerLinked,
+      workerError,
       addBrand,
       updateBrand,
       deleteBrand,
       addCampaign,
       setCampaignImportant,
       retryPhone,
+      deleteCampaign: deleteCampaignLocal,
       getBrandName,
     }),
     [
       brands,
       campaigns,
       workerLinked,
+      workerError,
       addBrand,
       updateBrand,
       deleteBrand,
       addCampaign,
       setCampaignImportant,
       retryPhone,
+      deleteCampaignLocal,
       getBrandName,
     ],
   )

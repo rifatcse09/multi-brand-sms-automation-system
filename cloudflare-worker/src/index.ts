@@ -43,7 +43,7 @@ type Brand = {
   name: string;
   twilioAccountSid: string;
   twilioApiKey: string;
-  twilioSecret: string;
+  twilioAuthToken: string;
   messagingServiceSid: string;
   activeCampaignApiUrl: string;
   activeCampaignApiKey: string;
@@ -73,6 +73,7 @@ type Campaign = {
   important: boolean;
   createdAt: string;
   queueProgress: number;
+  deletedAt?: string;
 };
 
 type CampaignDetail = Campaign & {
@@ -215,6 +216,77 @@ function normalizePhone(raw: string | null): string | null {
   if (digits.length === 10) return `+1${digits}`;
   if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
   return null;
+}
+
+async function acFetchJson(
+  brand: Brand,
+  path: string,
+): Promise<Record<string, unknown>> {
+  const base = brand.activeCampaignApiUrl.replace(/\/+$/, "");
+  const res = await fetch(`${base}${path}`, {
+    headers: {
+      "Api-Token": brand.activeCampaignApiKey,
+      Accept: "application/json",
+    },
+  });
+  const text = await res.text();
+  let payload: Record<string, unknown>;
+  try {
+    payload = JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    payload = { raw: text };
+  }
+  if (!res.ok) {
+    throw new Error(`ActiveCampaign ${res.status}`);
+  }
+  return payload;
+}
+
+async function fetchPhonesFromActiveCampaign(
+  brand: Brand,
+  tagName: string,
+  maxCount: number,
+): Promise<string[]> {
+  if (!brand.activeCampaignApiUrl || !brand.activeCampaignApiKey) return [];
+  if (!tagName) return [];
+
+  const tagResp = await acFetchJson(
+    brand,
+    `/api/3/tags?search=${encodeURIComponent(tagName)}`,
+  );
+  const tags = (tagResp.tags as Array<{ id?: string; tag?: string }> | undefined) ?? [];
+  const tag =
+    tags.find(
+      (t) =>
+        (t.tag || "").trim().toLowerCase() === tagName.trim().toLowerCase(),
+    ) ?? tags[0];
+  if (!tag?.id) return [];
+
+  const result: string[] = [];
+  let offset = 0;
+  const pageSize = 100;
+  while (result.length < maxCount) {
+    const contactsResp = await acFetchJson(
+      brand,
+      `/api/3/contacts?tagid=${encodeURIComponent(tag.id)}&limit=${pageSize}&offset=${offset}`,
+    );
+    const contacts =
+      (contactsResp.contacts as Array<{ phone?: string; mobile?: string }> | undefined) ?? [];
+    if (contacts.length === 0) break;
+
+    for (const contact of contacts) {
+      const phone = normalizePhone(contact.phone || contact.mobile || null);
+      if (phone && !result.includes(phone)) {
+        result.push(phone);
+      }
+      if (result.length >= maxCount) break;
+    }
+
+    if (contacts.length < pageSize) break;
+    offset += pageSize;
+  }
+
+  return result;
 }
 
 async function sha256(input: string): Promise<string> {
@@ -433,22 +505,25 @@ async function processSingleMessage(env: Env, msg: CampaignQueueMessage) {
 async function listCampaigns(env: Env): Promise<Campaign[]> {
   const ids = (await kvGetJSON<string[]>(env.SMS_KV, key.campaigns)) ?? [];
   const campaigns = await Promise.all(ids.map((id) => kvGetJSON<Campaign>(env.SMS_KV, key.campaign(id))));
-  return campaigns.filter((x): x is Campaign => Boolean(x));
+  return campaigns.filter((x): x is Campaign => {
+    if (!x) return false;
+    return !x.deletedAt;
+  });
 }
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
-    if (isProtectedRequest(url) && !authOk(request, env, url)) {
-      return json({ ok: false, error: "Unauthorized" }, 401);
-    }
-
     if (request.method === "OPTIONS") {
       return new Response(null, {
         status: 204,
         headers: corsHeaders,
       });
+    }
+
+    if (isProtectedRequest(url) && !authOk(request, env, url)) {
+      return json({ ok: false, error: "Unauthorized" }, 401);
     }
 
     // Health + route map
@@ -773,11 +848,42 @@ export default {
         message: string;
       };
       const id = body.id || randomId("blast");
-      const total = Math.max(1, parseInt(env.DEFAULT_CONTACT_COUNT ?? "120", 10));
       const brandId = body.brandId || env.DEFAULT_BRAND_ID || "brand-default";
+      const targetCount = Math.max(1, parseInt(env.DEFAULT_CONTACT_COUNT ?? "120", 10));
+      const brand = await kvGetJSON<Brand>(env.SMS_KV, key.brand(brandId));
+      if (!brand) {
+        return json({ ok: false, error: "Brand not found. Add brand first." }, 400);
+      }
+
+      let phoneNumbers: string[] = [];
+      let audienceSource: "activecampaign" | "mock" = "mock";
+      if (brand.activeCampaignApiUrl && brand.activeCampaignApiKey) {
+        try {
+          phoneNumbers = await fetchPhonesFromActiveCampaign(
+            brand,
+            body.tag || "SMS_BLAST",
+            targetCount,
+          );
+          if (phoneNumbers.length > 0) {
+            audienceSource = "activecampaign";
+          }
+        } catch {
+          /* fall through to mock audience */
+        }
+      }
+      if (phoneNumbers.length === 0) {
+        phoneNumbers = makeMockPhones(targetCount).map((p) => p.phone);
+      }
+
+      const phones: PhoneResult[] = phoneNumbers.map((phone, idx) => ({
+        id: `p-${idx + 1}`,
+        phone,
+        status: "Pending",
+      }));
+      const total = phones.length;
       const item: Campaign = {
         id,
-        name: `${brandId} — ${body.tag || "SMS_BLAST"}`,
+        name: `${brand.name} — ${body.tag || "SMS_BLAST"}`,
         messagePreview: preview(body.message || ""),
         brandId,
         tag: body.tag || "SMS_BLAST",
@@ -790,7 +896,6 @@ export default {
         createdAt: now(),
         queueProgress: 0,
       };
-      const phones = makeMockPhones(total);
       await Promise.all([
         kvPutJSON(env.SMS_KV, key.campaign(id), item),
         kvPutJSON(env.SMS_KV, key.campaignPhones(id), phones),
@@ -805,7 +910,7 @@ export default {
           body: item.message,
         });
       }
-      return json({ ok: true, campaign: item }, 201);
+      return json({ ok: true, campaign: item, audienceSource }, 201);
     }
 
     if (url.pathname.startsWith("/campaigns/")) {
@@ -815,7 +920,7 @@ export default {
 
       if (segments.length === 2 && request.method === "GET") {
         const base = await kvGetJSON<Campaign>(env.SMS_KV, key.campaign(campaignId));
-        if (!base) return json({ ok: false, error: "Campaign not found" }, 404);
+        if (!base || base.deletedAt) return json({ ok: false, error: "Campaign not found" }, 404);
         const phones = (await kvGetJSON<PhoneResult[]>(env.SMS_KV, key.campaignPhones(campaignId))) ?? [];
         const counters = await getCampaignMeta(env, campaignId);
         const detail = { ...base, phones, counters } as CampaignDetail & { counters: CampaignMeta };
@@ -834,7 +939,7 @@ export default {
       if (segments[2] === "retry-failed" && request.method === "POST") {
         const base = await kvGetJSON<Campaign>(env.SMS_KV, key.campaign(campaignId));
         const phones = await kvGetJSON<PhoneResult[]>(env.SMS_KV, key.campaignPhones(campaignId));
-        if (!base || !phones) return json({ ok: false, error: "Campaign not found" }, 404);
+        if (!base || base.deletedAt || !phones) return json({ ok: false, error: "Campaign not found" }, 404);
         const retriable = phones.filter((p) => p.status === "Failed");
         for (const phone of retriable) {
           phone.status = "Pending";
@@ -848,6 +953,14 @@ export default {
         }
         await kvPutJSON(env.SMS_KV, key.campaignPhones(campaignId), phones);
         return json({ ok: true, queued: retriable.length });
+      }
+
+      if (segments.length === 2 && request.method === "DELETE") {
+        const base = await kvGetJSON<Campaign>(env.SMS_KV, key.campaign(campaignId));
+        if (!base) return json({ ok: false, error: "Campaign not found" }, 404);
+        const updated: Campaign = { ...base, deletedAt: now() };
+        await kvPutJSON(env.SMS_KV, key.campaign(campaignId), updated);
+        return json({ ok: true, campaign: updated });
       }
     }
 
@@ -905,7 +1018,7 @@ export default {
       const id = url.searchParams.get("id");
       if (!id) return json({ ok: false, error: "Missing id" }, 400);
       const campaign = await kvGetJSON<Campaign>(env.SMS_KV, key.campaign(id));
-      if (!campaign) return json({ ok: false, error: "Not found" }, 404);
+      if (!campaign || campaign.deletedAt) return json({ ok: false, error: "Not found" }, 404);
       const counters = await getCampaignMeta(env, id);
       return json({ ok: true, blast: { ...campaign, counters } });
     }

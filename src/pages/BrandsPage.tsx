@@ -13,14 +13,14 @@ const emptyBrand: Omit<Brand, 'id'> = {
   name: '',
   twilioAccountSid: '',
   twilioApiKey: '',
-  twilioSecret: '',
+  twilioAuthToken: '',
   messagingServiceSid: '',
   activeCampaignApiUrl: '',
   activeCampaignApiKey: '',
 }
 
 export function BrandsPage() {
-  const { brands, addBrand, updateBrand, deleteBrand } = useAppData()
+  const { brands, addBrand, updateBrand, deleteBrand, workerError, workerLinked } = useAppData()
   const [modalOpen, setModalOpen] = useState(false)
   const [deleteId, setDeleteId] = useState<string | null>(null)
   const [editing, setEditing] = useState<Brand | null>(null)
@@ -71,6 +71,10 @@ export function BrandsPage() {
             </Button>
           }
         />
+        {!workerLinked ? (
+          <p className="mt-2 text-xs text-amber-600">Backend not connected. Changes are local only.</p>
+        ) : null}
+        {workerError ? <p className="mt-2 text-xs text-red-600">{workerError}</p> : null}
       </Card>
 
       {brands.length === 0 ? (
@@ -163,12 +167,12 @@ export function BrandsPage() {
             />
           </div>
           <div>
-            <Label htmlFor="twilio-secret">Twilio Secret</Label>
+            <Label htmlFor="twilio-auth-token">Twilio Auth Token</Label>
             <Input
-              id="twilio-secret"
+              id="twilio-auth-token"
               type="password"
-              value={form.twilioSecret}
-              onChange={(e) => setForm((f) => ({ ...f, twilioSecret: e.target.value }))}
+              value={form.twilioAuthToken}
+              onChange={(e) => setForm((f) => ({ ...f, twilioAuthToken: e.target.value }))}
             />
           </div>
           <div>

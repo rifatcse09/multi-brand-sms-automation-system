@@ -273,3 +273,15 @@ export async function fetchWorkerSentVsFailed() {
     []
   )
 }
+
+export async function fetchWorkerCampaignById(id: string) {
+  const payload = await requestJson(`/campaigns/${id}`)
+  return payload as { ok: true; campaign: Campaign & { phones?: unknown[] } }
+}
+
+export async function deleteWorkerCampaign(id: string) {
+  const payload = await requestJson(`/campaigns/${id}`, {
+    method: 'DELETE',
+  })
+  return payload as { ok: true; campaign: Campaign }
+}

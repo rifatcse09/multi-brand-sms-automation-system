@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Star, Filter, Plus } from 'lucide-react'
+import { Star, Filter, Plus, Trash2 } from 'lucide-react'
 import { Card, CardHeader } from '../components/ui/Card'
 import { Button } from '../components/ui/Button'
 import { Select } from '../components/ui/Select'
@@ -15,7 +15,7 @@ import type { CampaignStatus } from '../types'
 
 export function CampaignListPage() {
   const navigate = useNavigate()
-  const { campaigns, getBrandName, setCampaignImportant } = useAppData()
+  const { campaigns, getBrandName, setCampaignImportant, deleteCampaign } = useAppData()
   const ready = useDelayedReady()
 
   const [brandFilter, setBrandFilter] = useState<string>('all')
@@ -138,6 +138,7 @@ export function CampaignListPage() {
               <Th className="text-right">Failed</Th>
               <Th>Status</Th>
               <Th className="hidden md:table-cell">Created</Th>
+              <Th className="w-12 text-center">Delete</Th>
             </tr>
           </thead>
           <tbody>
@@ -181,6 +182,21 @@ export function CampaignListPage() {
                   <StatusBadge status={c.status} />
                 </Td>
                 <Td className="hidden text-xs text-slate-500 md:table-cell">{formatDate(c.createdAt)}</Td>
+                <Td className="w-12 text-center">
+                  <button
+                    type="button"
+                    className="inline-flex rounded-md p-1 text-slate-400 hover:bg-red-50 hover:text-red-600"
+                    aria-label="Delete campaign"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      if (window.confirm(`Delete campaign "${c.name}"?`)) {
+                        deleteCampaign(c.id)
+                      }
+                    }}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </Td>
               </tr>
             ))}
           </tbody>

@@ -1,32 +1,57 @@
-import { Link, useParams } from 'react-router-dom'
-import { ArrowLeft, RefreshCw } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { Link, useNavigate, useParams } from 'react-router-dom'
+import { ArrowLeft, RefreshCw, Trash2 } from 'lucide-react'
 import { Card, CardHeader } from '../components/ui/Card'
 import { Button } from '../components/ui/Button'
 import { ProgressBar } from '../components/ui/ProgressBar'
 import { TableWrap, Th, Td } from '../components/ui/Table'
 import { StatusBadge } from '../components/ui/Badge'
 import { useAppData } from '../context/AppDataContext'
+import { fetchWorkerCampaignById, isWorkerConfigured } from '../services/smsWorkerApi'
+import type { Campaign } from '../types'
 
 export function CampaignDetailPage() {
+  const navigate = useNavigate()
   const { id } = useParams<{ id: string }>()
-  const { campaigns, getBrandName, retryPhone } = useAppData()
+  const { campaigns, getBrandName, retryPhone, deleteCampaign } = useAppData()
   const campaign = campaigns.find((c) => c.id === id)
+  const [remoteCampaign, setRemoteCampaign] = useState<Campaign | null>(null)
+  const [loadingRemote, setLoadingRemote] = useState(false)
 
-  if (!campaign) {
+  useEffect(() => {
+    if (!id || campaign || !isWorkerConfigured()) return
+    setLoadingRemote(true)
+    void (async () => {
+      try {
+        const res = await fetchWorkerCampaignById(id)
+        setRemoteCampaign(res.campaign)
+      } catch {
+        setRemoteCampaign(null)
+      } finally {
+        setLoadingRemote(false)
+      }
+    })()
+  }, [id, campaign])
+
+  const activeCampaign = campaign ?? remoteCampaign
+
+  if (!activeCampaign) {
     return (
       <div className="space-y-4">
         <Link to="/campaigns" className="inline-flex text-sm font-medium text-blue-600 hover:underline">
           ← Back to campaigns
         </Link>
         <Card padding="md">
-          <p className="text-sm text-slate-600">Campaign not found.</p>
+          <p className="text-sm text-slate-600">
+            {loadingRemote ? 'Loading campaign...' : 'Campaign not found.'}
+          </p>
         </Card>
       </div>
     )
   }
 
   const pct =
-    campaign.total > 0 ? Math.round((campaign.sent / campaign.total) * 100) : 0
+    activeCampaign.total > 0 ? Math.round((activeCampaign.sent / activeCampaign.total) * 100) : 0
 
   return (
     <div className="space-y-6">
@@ -40,14 +65,30 @@ export function CampaignDetailPage() {
             Campaigns
           </Link>
           <h1 className="mt-2 text-xl font-semibold tracking-tight text-slate-900 sm:text-2xl">
-            {campaign.name}
+            {activeCampaign.name}
           </h1>
           <p className="mt-1 text-sm text-slate-500">
-            {getBrandName(campaign.brandId)} · Tag{' '}
-            <span className="font-mono text-slate-700">{campaign.tag}</span>
+            {getBrandName(activeCampaign.brandId)} · Tag{' '}
+            <span className="font-mono text-slate-700">{activeCampaign.tag}</span>
           </p>
         </div>
-        <StatusBadge status={campaign.status} />
+        <div className="flex items-center gap-2">
+          <StatusBadge status={activeCampaign.status} />
+          <Button
+            variant="secondary"
+            size="sm"
+            className="text-red-600 hover:bg-red-50 hover:text-red-700"
+            onClick={() => {
+              if (window.confirm(`Delete campaign "${activeCampaign.name}"?`)) {
+                deleteCampaign(activeCampaign.id)
+                navigate('/campaigns')
+              }
+            }}
+          >
+            <Trash2 className="h-4 w-4" />
+            Delete
+          </Button>
+        </div>
       </div>
 
       <div className="grid gap-4 lg:grid-cols-3">
@@ -57,19 +98,19 @@ export function CampaignDetailPage() {
             <div className="rounded-lg border border-slate-100 bg-slate-50/60 p-4">
               <p className="text-xs font-medium text-slate-500">Total</p>
               <p className="mt-1 text-2xl font-semibold tabular-nums text-slate-900">
-                {campaign.total.toLocaleString()}
+                {activeCampaign.total.toLocaleString()}
               </p>
             </div>
             <div className="rounded-lg border border-slate-100 bg-slate-50/60 p-4">
               <p className="text-xs font-medium text-slate-500">Sent</p>
               <p className="mt-1 text-2xl font-semibold tabular-nums text-slate-900">
-                {campaign.sent.toLocaleString()}
+                {activeCampaign.sent.toLocaleString()}
               </p>
             </div>
             <div className="rounded-lg border border-slate-100 bg-slate-50/60 p-4">
               <p className="text-xs font-medium text-slate-500">Failed</p>
               <p className="mt-1 text-2xl font-semibold tabular-nums text-slate-900">
-                {campaign.failed.toLocaleString()}
+                {activeCampaign.failed.toLocaleString()}
               </p>
             </div>
           </div>
@@ -78,25 +119,25 @@ export function CampaignDetailPage() {
               <span className="font-medium text-slate-700">Queue processing</span>
               <span className="tabular-nums text-slate-500">{pct}%</span>
             </div>
-            <ProgressBar value={campaign.status === 'Running' ? campaign.queueProgress : pct} />
+            <ProgressBar value={activeCampaign.status === 'Running' ? activeCampaign.queueProgress : pct} />
           </div>
         </Card>
 
         <Card padding="md">
           <CardHeader title="Message" />
-          <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-700">{campaign.message}</p>
+          <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-700">{activeCampaign.message}</p>
         </Card>
       </div>
 
       <Card padding="md">
         <CardHeader title="Batch progress" description="Parallel workers split the audience into batches." />
-        {campaign.batches.length === 0 ? (
+        {activeCampaign.batches.length === 0 ? (
           <p className="text-sm text-slate-500">
             No batch data exposed by this backend response yet.
           </p>
         ) : (
           <div className="space-y-3">
-            {campaign.batches.map((b) => (
+            {activeCampaign.batches.map((b) => (
               <div
                 key={b.id}
                 className="rounded-lg border border-slate-100 bg-white p-4 shadow-[var(--shadow-soft)]"
@@ -130,14 +171,14 @@ export function CampaignDetailPage() {
             </tr>
           </thead>
           <tbody>
-            {campaign.phones.length === 0 ? (
+            {activeCampaign.phones.length === 0 ? (
               <tr>
                 <Td colSpan={4} className="py-8 text-center text-sm text-slate-500">
                   No phone-level rows are available from the current endpoint.
                 </Td>
               </tr>
             ) : (
-              campaign.phones.map((p) => (
+              activeCampaign.phones.map((p) => (
                 <tr key={p.id} className="hover:bg-slate-50/80">
                   <Td className="font-mono text-xs sm:text-sm">{p.phone}</Td>
                   <Td>
@@ -159,7 +200,7 @@ export function CampaignDetailPage() {
                       <Button
                         variant="secondary"
                         size="sm"
-                        onClick={() => retryPhone(campaign.id, p.id)}
+                        onClick={() => retryPhone(activeCampaign.id, p.id)}
                       >
                         <RefreshCw className="h-3.5 w-3.5" aria-hidden />
                         Retry
