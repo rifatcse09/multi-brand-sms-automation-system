@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, RefreshCw, Trash2 } from 'lucide-react'
+import { ArrowLeft, RefreshCw, ScrollText, Trash2 } from 'lucide-react'
 import { Card, CardHeader } from '../components/ui/Card'
 import { Button } from '../components/ui/Button'
 import { Modal } from '../components/ui/Modal'
@@ -9,7 +9,7 @@ import { TableWrap, Th, Td } from '../components/ui/Table'
 import { StatusBadge } from '../components/ui/Badge'
 import { useAppData } from '../context/AppDataContext'
 import { fetchWorkerCampaignById, isWorkerConfigured } from '../services/smsWorkerApi'
-import type { Campaign } from '../types'
+import type { Campaign, PhoneResult } from '../types'
 
 export function CampaignDetailPage() {
   const navigate = useNavigate()
@@ -19,6 +19,7 @@ export function CampaignDetailPage() {
   const [remoteCampaign, setRemoteCampaign] = useState<Campaign | null>(null)
   const [loadingRemote, setLoadingRemote] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
+  const [failureLogPhone, setFailureLogPhone] = useState<PhoneResult | null>(null)
 
   useEffect(() => {
     if (!id || !isWorkerConfigured()) return
@@ -193,14 +194,17 @@ export function CampaignDetailPage() {
 
       <Card padding="none">
         <div className="border-b border-slate-100 px-5 py-4 sm:px-6">
-          <CardHeader title="Phone number results" description="Per-recipient delivery outcomes (sample)." />
+          <CardHeader
+            title="Phone number results"
+            description="Per-recipient outcomes. Open “Root cause” for full diagnostics (Twilio API, carrier callback, or mock)."
+          />
         </div>
         <TableWrap className="rounded-none border-0 shadow-none">
           <thead>
             <tr>
               <Th>Phone number</Th>
               <Th>Status</Th>
-              <Th className="hidden sm:table-cell">Error</Th>
+              <Th className="min-w-[8rem]">Summary</Th>
               <Th className="text-right">Actions</Th>
             </tr>
           </thead>
@@ -230,22 +234,37 @@ export function CampaignDetailPage() {
                       {p.status}
                     </span>
                   </Td>
-                  <Td className="hidden max-w-xs truncate text-xs text-slate-500 sm:table-cell">
-                    {p.error ?? '—'}
+                  <Td className="max-w-[14rem] truncate text-xs text-slate-600" title={p.error ?? ''}>
+                    {p.error ?? (p.status === 'Pending' ? 'Queued…' : '—')}
                   </Td>
                   <Td className="text-right">
-                    {p.status === 'Failed' ? (
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        onClick={() => retryPhone(activeCampaign.id, p.id)}
-                      >
-                        <RefreshCw className="h-3.5 w-3.5" aria-hidden />
-                        Retry
-                      </Button>
-                    ) : (
-                      <span className="text-xs text-slate-400">—</span>
-                    )}
+                    <div className="flex flex-wrap items-center justify-end gap-1">
+                      {p.error || p.failureDetail ? (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="text-slate-600 hover:text-slate-900"
+                          onClick={() => setFailureLogPhone(p)}
+                        >
+                          <ScrollText className="h-3.5 w-3.5" aria-hidden />
+                          Root cause
+                        </Button>
+                      ) : null}
+                      {p.status === 'Failed' ? (
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => retryPhone(activeCampaign.id, p.id)}
+                        >
+                          <RefreshCw className="h-3.5 w-3.5" aria-hidden />
+                          Retry
+                        </Button>
+                      ) : null}
+                      {!p.error && !p.failureDetail && p.status !== 'Failed' ? (
+                        <span className="text-xs text-slate-400">—</span>
+                      ) : null}
+                    </div>
                   </Td>
                 </tr>
               ))
@@ -253,6 +272,63 @@ export function CampaignDetailPage() {
           </tbody>
         </TableWrap>
       </Card>
+
+      <Modal
+        open={Boolean(failureLogPhone)}
+        onClose={() => setFailureLogPhone(null)}
+        title="Delivery root cause"
+        description="What the Worker stored for this number (first attempt or after retry)."
+        size="lg"
+        footer={
+          <Button variant="secondary" onClick={() => setFailureLogPhone(null)}>
+            Close
+          </Button>
+        }
+      >
+        {failureLogPhone ? (
+          <div className="space-y-3 text-sm">
+            <dl className="grid gap-2 text-slate-700">
+              <div className="flex flex-wrap gap-2">
+                <dt className="font-medium text-slate-500">Number</dt>
+                <dd className="font-mono text-xs">{failureLogPhone.phone}</dd>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <dt className="font-medium text-slate-500">Status</dt>
+                <dd>{failureLogPhone.status}</dd>
+              </div>
+              {failureLogPhone.failureSource ? (
+                <div className="flex flex-wrap gap-2">
+                  <dt className="font-medium text-slate-500">Source</dt>
+                  <dd className="font-mono text-xs">{failureLogPhone.failureSource}</dd>
+                </div>
+              ) : null}
+              {failureLogPhone.failedAt ? (
+                <div className="flex flex-wrap gap-2">
+                  <dt className="font-medium text-slate-500">Recorded</dt>
+                  <dd className="text-xs">{failureLogPhone.failedAt}</dd>
+                </div>
+              ) : null}
+            </dl>
+            <div>
+              <p className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500">
+                Summary
+              </p>
+              <p className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-slate-800">
+                {failureLogPhone.error ?? '—'}
+              </p>
+            </div>
+            <div>
+              <p className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500">
+                Full diagnostic
+              </p>
+              <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md border border-slate-200 bg-slate-50 p-3 font-mono text-xs text-slate-800">
+                {failureLogPhone.failureDetail?.trim() ||
+                  'No extended log was stored (older Worker version or local demo data). The summary above is all we have.'}
+              </pre>
+            </div>
+          </div>
+        ) : null}
+      </Modal>
 
       <Modal
         open={deleteOpen}

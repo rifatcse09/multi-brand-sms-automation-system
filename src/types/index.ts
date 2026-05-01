@@ -4,7 +4,15 @@ export interface PhoneResult {
   id: string
   phone: string
   status: 'Pending' | 'Success' | 'Failed'
+  /** Short headline for tables (e.g. Twilio API error code + message). */
   error?: string
+  twilioSid?: string
+  /** When this row last became Failed (ISO8601). */
+  failedAt?: string
+  /** twilio_rest | twilio_callback | mock_simulated | unknown */
+  failureSource?: string
+  /** Multi-line diagnostic: HTTP status, Twilio fields, timestamps. */
+  failureDetail?: string
 }
 
 export interface Batch {

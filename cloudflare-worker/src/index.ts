@@ -57,6 +57,9 @@ type PhoneResult = {
   status: PhoneStatus;
   error?: string;
   twilioSid?: string;
+  failedAt?: string;
+  failureSource?: "twilio_rest" | "twilio_callback" | "mock_simulated" | "unknown";
+  failureDetail?: string;
 };
 
 type Campaign = {
@@ -412,12 +415,60 @@ function calcStatus(sent: number, failed: number, total: number): CampaignStatus
   return "Running";
 }
 
-async function twilioSend(env: Env, to: string, body: string, statusCallbackUrl?: string) {
+function formatTwilioRestError(httpStatus: number, bodyText: string): { summary: string; detail: string } {
+  const trimmed = bodyText.trim();
+  let code: string | number | undefined;
+  let message: string | undefined;
+  let moreInfo: string | undefined;
+  try {
+    const j = JSON.parse(trimmed) as Record<string, unknown>;
+    if (j.code !== undefined && j.code !== null) code = j.code as string | number;
+    if (typeof j.message === "string") message = j.message;
+    if (typeof j.more_info === "string") moreInfo = j.more_info;
+  } catch {
+    /* body not JSON */
+  }
+  const summary =
+    code !== undefined && message
+      ? `Twilio API error ${code}: ${message}`
+      : `Twilio HTTP ${httpStatus}${trimmed ? `: ${trimmed.slice(0, 160)}` : ""}`;
+  const detail = [
+    `Time: ${now()}`,
+    `HTTP status: ${httpStatus}`,
+    code !== undefined ? `Twilio code: ${code}` : null,
+    message ? `Twilio message: ${message}` : null,
+    moreInfo ? `More info: ${moreInfo}` : null,
+    trimmed.length > 0 ? `Raw response (truncated):\n${trimmed.slice(0, 1800)}` : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  return { summary, detail };
+}
+
+type TwilioSendOutcome =
+  | { ok: true; sid?: string }
+  | { ok: false; summary: string; detail: string };
+
+async function twilioSendWithDetails(
+  env: Env,
+  to: string,
+  body: string,
+  statusCallbackUrl?: string,
+): Promise<TwilioSendOutcome> {
   const sid = env.TWILIO_ACCOUNT_SID;
   const token = env.TWILIO_AUTH_TOKEN;
   const mg = env.TWILIO_MESSAGING_SERVICE_SID;
   if (!sid || !token || !mg) {
-    throw new Error("Twilio credentials are not configured");
+    return {
+      ok: false,
+      summary: "Twilio is not configured for this Worker.",
+      detail: [
+        `Time: ${now()}`,
+        `SEND_MODE=${env.SEND_MODE || "(unset)"}`,
+        "Missing one or more: TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_MESSAGING_SERVICE_SID.",
+        "Use SEND_MODE=mock to exercise failures without Twilio, or set the secrets for real sends.",
+      ].join("\n"),
+    };
   }
   const form = new URLSearchParams();
   form.set("To", to);
@@ -433,12 +484,22 @@ async function twilioSend(env: Env, to: string, body: string, statusCallbackUrl?
     body: form.toString(),
   });
   const txt = await res.text();
-  if (!res.ok) throw new Error(`Twilio ${res.status}: ${txt.slice(0, 200)}`);
-  try {
-    return JSON.parse(txt) as { sid?: string };
-  } catch {
-    return { sid: undefined };
+  if (!res.ok) {
+    const { summary, detail } = formatTwilioRestError(res.status, txt);
+    return { ok: false, summary, detail };
   }
+  try {
+    const j = JSON.parse(txt) as { sid?: string };
+    return { ok: true, sid: j.sid };
+  } catch {
+    return { ok: true, sid: undefined };
+  }
+}
+
+async function twilioSend(env: Env, to: string, body: string, statusCallbackUrl?: string) {
+  const r = await twilioSendWithDetails(env, to, body, statusCallbackUrl);
+  if (!r.ok) throw new Error(r.summary);
+  return { sid: r.sid };
 }
 
 async function updateDaily(env: Env, sentDelta: number, failedDelta: number) {
@@ -465,30 +526,64 @@ async function processSingleMessage(env: Env, msg: CampaignQueueMessage) {
   let status: PhoneStatus = "Success";
   let error: string | undefined;
   let twilioSid: string | undefined;
+  let failedAt: string | undefined;
+  let failureSource: PhoneResult["failureSource"];
+  let failureDetail: string | undefined;
 
   if (env.SEND_MODE === "real") {
-    try {
-      const statusCallbackUrl =
-        env.WORKER_BASE_URL && env.TWILIO_STATUS_TOKEN
-          ? `${env.WORKER_BASE_URL.replace(/\/+$/, "")}/twilio/status?token=${encodeURIComponent(
-              env.TWILIO_STATUS_TOKEN,
-            )}`
-          : undefined;
-      const out = await twilioSend(env, msg.phone, msg.body, statusCallbackUrl);
+    const statusCallbackUrl =
+      env.WORKER_BASE_URL && env.TWILIO_STATUS_TOKEN
+        ? `${env.WORKER_BASE_URL.replace(/\/+$/, "")}/twilio/status?token=${encodeURIComponent(
+            env.TWILIO_STATUS_TOKEN,
+          )}`
+        : undefined;
+    const out = await twilioSendWithDetails(env, msg.phone, msg.body, statusCallbackUrl);
+    if (out.ok) {
       twilioSid = out.sid;
-    } catch (e) {
+    } else {
       status = "Failed";
-      error = e instanceof Error ? e.message : String(e);
+      error = out.summary;
+      failureDetail = out.detail;
+      failureSource = "twilio_rest";
+      failedAt = now();
     }
   } else {
     const roll = Math.random();
     if (roll < 0.1) {
       status = "Failed";
       error = "Mock failure (simulated)";
+      failureSource = "mock_simulated";
+      failedAt = now();
+      failureDetail = [
+        `Time: ${now()}`,
+        `SEND_MODE=${env.SEND_MODE || "mock"}`,
+        "This failure was generated randomly in mock mode (~10% of messages).",
+        "It is not from Twilio or the carrier. Use it to test retries and the failure UI.",
+        `Roll: ${roll.toFixed(4)} (fails when < 0.1).`,
+      ].join("\n");
     }
   }
 
-  phones[idx] = { ...phones[idx], status, error, twilioSid };
+  phones[idx] =
+    status === "Success"
+      ? {
+          ...phones[idx],
+          status,
+          error: undefined,
+          twilioSid,
+          failedAt: undefined,
+          failureSource: undefined,
+          failureDetail: undefined,
+        }
+      : {
+          ...phones[idx],
+          status,
+          error,
+          twilioSid,
+          failedAt,
+          failureSource,
+          failureDetail,
+        };
   const sent = phones.filter((p) => p.status === "Success").length;
   const failed = phones.filter((p) => p.status === "Failed").length;
   const progress = campaign.total > 0 ? Math.round(((sent + failed) / campaign.total) * 100) : 0;
@@ -752,7 +847,35 @@ export default {
         if (campaign && phones) {
           const idx = phones.findIndex((p) => p.id === map.phoneId);
           if (idx >= 0 && phones[idx].status !== "Failed") {
-            phones[idx] = { ...phones[idx], status: "Failed", error: `Twilio status: ${status}` };
+            const errorCode = String(form.get("ErrorCode") || "").trim();
+            const errorMessage = String(form.get("ErrorMessage") || "").trim();
+            const toVal = String(form.get("To") || "").trim();
+            const summary =
+              errorCode && errorMessage
+                ? `Twilio delivery ${errorCode}: ${errorMessage}`
+                : errorMessage
+                  ? `${errorMessage} (${status})`
+                  : `Twilio carrier status: ${status}`;
+            const failureDetail = [
+              `Time: ${now()}`,
+              "Source: Twilio status callback (after the message was accepted by the REST API).",
+              `MessageSid: ${sid}`,
+              `MessageStatus: ${status}`,
+              errorCode ? `ErrorCode: ${errorCode}` : null,
+              errorMessage ? `ErrorMessage: ${errorMessage}` : null,
+              toVal ? `To: ${toVal}` : null,
+              `Campaign: ${map.campaignId}, phone row: ${map.phoneId}`,
+            ]
+              .filter(Boolean)
+              .join("\n");
+            phones[idx] = {
+              ...phones[idx],
+              status: "Failed",
+              error: summary,
+              failureDetail,
+              failureSource: "twilio_callback",
+              failedAt: now(),
+            };
             const sent = phones.filter((p) => p.status === "Success").length;
             const failed = phones.filter((p) => p.status === "Failed").length;
             const progress =
@@ -988,6 +1111,10 @@ export default {
         for (const phone of retriable) {
           phone.status = "Pending";
           phone.error = undefined;
+          phone.failureDetail = undefined;
+          phone.failureSource = undefined;
+          phone.failedAt = undefined;
+          phone.twilioSid = undefined;
           await env.CAMPAIGN_QUEUE.send({
             campaignId,
             phoneId: phone.id,
@@ -1014,7 +1141,15 @@ export default {
         if (phones[idx].status !== "Failed") {
           return json({ ok: false, error: "Only failed phones can be retried" }, 400);
         }
-        phones[idx] = { ...phones[idx], status: "Pending", error: undefined };
+        phones[idx] = {
+          ...phones[idx],
+          status: "Pending",
+          error: undefined,
+          failureDetail: undefined,
+          failureSource: undefined,
+          failedAt: undefined,
+          twilioSid: undefined,
+        };
         await env.CAMPAIGN_QUEUE.send({
           campaignId,
           phoneId: phones[idx].id,
