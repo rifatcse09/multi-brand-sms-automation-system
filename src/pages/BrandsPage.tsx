@@ -25,17 +25,20 @@ export function BrandsPage() {
   const [deleteId, setDeleteId] = useState<string | null>(null)
   const [editing, setEditing] = useState<Brand | null>(null)
   const [form, setForm] = useState<Omit<Brand, 'id'>>(emptyBrand)
+  const [formError, setFormError] = useState<string | null>(null)
 
   const title = useMemo(() => (editing ? 'Edit brand' : 'Add brand'), [editing])
 
   const openCreate = () => {
     setEditing(null)
     setForm(emptyBrand)
+    setFormError(null)
     setModalOpen(true)
   }
 
   const openEdit = (b: Brand) => {
     setEditing(b)
+    setFormError(null)
     const { id: _id, ...rest } = b
     void _id
     setForm(rest)
@@ -46,10 +49,19 @@ export function BrandsPage() {
     setModalOpen(false)
     setEditing(null)
     setForm(emptyBrand)
+    setFormError(null)
   }
 
   const save = () => {
-    if (!form.name.trim()) return
+    const errs: string[] = []
+    if (!form.name.trim()) errs.push('Brand name is required.')
+    if (!form.activeCampaignApiUrl.trim()) errs.push('ActiveCampaign API URL is required.')
+    if (!form.activeCampaignApiKey.trim()) errs.push('ActiveCampaign API key is required.')
+    if (errs.length) {
+      setFormError(errs.join(' '))
+      return
+    }
+    setFormError(null)
     if (editing) {
       updateBrand(editing.id, form)
     } else {
@@ -127,7 +139,7 @@ export function BrandsPage() {
         open={modalOpen}
         onClose={closeModal}
         title={title}
-        description="Credentials stay in this demo UI only — nothing is sent to a server."
+        description="Fields marked with * are required. Twilio fields are optional if sends use Worker-level credentials."
         size="lg"
         footer={
           <>
@@ -139,8 +151,15 @@ export function BrandsPage() {
         }
       >
         <div className="grid gap-4 sm:grid-cols-2">
+          {formError ? (
+            <p className="sm:col-span-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+              {formError}
+            </p>
+          ) : null}
           <div className="sm:col-span-2">
-            <Label htmlFor="brand-name">Brand name</Label>
+            <Label htmlFor="brand-name" required>
+              Brand name
+            </Label>
             <Input
               id="brand-name"
               value={form.name}
@@ -185,7 +204,9 @@ export function BrandsPage() {
             />
           </div>
           <div className="sm:col-span-2">
-            <Label htmlFor="ac-url">ActiveCampaign API URL</Label>
+            <Label htmlFor="ac-url" required>
+              ActiveCampaign API URL
+            </Label>
             <Input
               id="ac-url"
               value={form.activeCampaignApiUrl}
@@ -194,7 +215,9 @@ export function BrandsPage() {
             />
           </div>
           <div className="sm:col-span-2">
-            <Label htmlFor="ac-key">ActiveCampaign API Key</Label>
+            <Label htmlFor="ac-key" required>
+              ActiveCampaign API Key
+            </Label>
             <Input
               id="ac-key"
               type="password"
@@ -209,7 +232,7 @@ export function BrandsPage() {
         open={Boolean(deleteId)}
         onClose={() => setDeleteId(null)}
         title="Delete brand?"
-        description="Campaigns linked to this brand will be removed from the demo dataset."
+        description="Campaigns linked to this brand may become invalid or hidden depending on your backend."
         footer={
           <>
             <Button variant="secondary" onClick={() => setDeleteId(null)}>

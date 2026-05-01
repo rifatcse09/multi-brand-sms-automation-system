@@ -12,11 +12,10 @@ export function CreateCampaignPage() {
   const { brands, addCampaign, workerLinked } = useAppData()
   const navigate = useNavigate()
   const [brandId, setBrandId] = useState(brands[0]?.id ?? '')
-  const [tag, setTag] = useState('newsletter')
-  const [message, setMessage] = useState(
-    'Hi {{first_name}}, thanks for being a customer. Reply STOP to opt out.',
-  )
+  const [tag, setTag] = useState('')
+  const [message, setMessage] = useState('')
   const [loading, setLoading] = useState(false)
+  const [formError, setFormError] = useState<string | null>(null)
 
   useEffect(() => {
     if (!brandId && brands[0]) setBrandId(brands[0].id)
@@ -24,11 +23,27 @@ export function CreateCampaignPage() {
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
-    if (!brandId) return
+    setFormError(null)
+    const tagTrim = tag.trim()
+    const messageTrim = message.trim()
+    if (!brandId) {
+      setFormError('Choose a brand.')
+      return
+    }
+    if (!tagTrim) {
+      setFormError('ActiveCampaign tag is required.')
+      return
+    }
+    if (!messageTrim) {
+      setFormError('Message is required.')
+      return
+    }
     setLoading(true)
     try {
-      const c = await addCampaign({ brandId, tag: tag.trim(), message: message.trim() })
+      const c = await addCampaign({ brandId, tag: tagTrim, message: messageTrim })
       navigate(`/campaigns/${c.id}`)
+    } catch {
+      setFormError('Could not create campaign. Check the Worker response or your connection.')
     } finally {
       setLoading(false)
     }
@@ -53,9 +68,16 @@ export function CreateCampaignPage() {
             Add a brand first, then return here to send a campaign.
           </p>
         ) : (
-          <form className="space-y-4" onSubmit={handleSubmit}>
+          <form className="space-y-4" onSubmit={handleSubmit} noValidate>
+            {formError ? (
+              <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+                {formError}
+              </p>
+            ) : null}
             <div>
-              <Label htmlFor="brand">Brand</Label>
+              <Label htmlFor="brand" required>
+                Brand
+              </Label>
               <Select
                 id="brand"
                 value={brandId}
@@ -70,23 +92,29 @@ export function CreateCampaignPage() {
               </Select>
             </div>
             <div>
-              <Label htmlFor="tag">Tag (ActiveCampaign)</Label>
+              <Label htmlFor="tag" required>
+                Tag (ActiveCampaign)
+              </Label>
               <Input
                 id="tag"
                 value={tag}
                 onChange={(e) => setTag(e.target.value)}
-                placeholder="e.g. vip-launch"
-                required
+                placeholder="Exact tag name in ActiveCampaign (no default)"
+                autoComplete="off"
               />
             </div>
             <div>
-              <Label htmlFor="message">Message</Label>
+              <Label htmlFor="message" required>
+                Message
+              </Label>
               <Textarea
                 id="message"
                 value={message}
                 onChange={(e) => setMessage(e.target.value)}
                 rows={6}
-                required
+                placeholder={
+                  'Hi {{first_name}}, thanks for being a customer. Reply STOP to opt out.'
+                }
               />
               <p className="mt-1.5 text-xs text-slate-500">
                 Merge fields like <span className="font-mono">{'{{first_name}}'}</span> are

@@ -563,6 +563,7 @@ export default {
           brands: "/brands",
           campaigns: "/campaigns",
           campaignDetail: "/campaigns/:id",
+          campaignRetryPhone: "POST /campaigns/:id/phones/:phoneId/retry",
           blastCompat: "/blast?secret=...&tag=...&msg=...&blast_id=...",
           metricsAllCompat: "/metrics/all?secret=...&limit=25",
           metricsOneCompat: "/metrics?secret=...&id=BLAST_ID",
@@ -872,9 +873,19 @@ export default {
       const body = (await request.json()) as {
         id?: string;
         brandId?: string;
-        tag: string;
-        message: string;
+        tag?: string;
+        message?: string;
       };
+      const tag =
+        typeof body.tag === "string" ? body.tag.trim() : "";
+      const message =
+        typeof body.message === "string" ? body.message.trim() : "";
+      if (!tag) {
+        return json({ ok: false, error: "Tag is required (ActiveCampaign tag name)." }, 400);
+      }
+      if (!message) {
+        return json({ ok: false, error: "Message is required." }, 400);
+      }
       const id = body.id || randomId("blast");
       const brandId = body.brandId || env.DEFAULT_BRAND_ID || "brand-default";
       const targetCount = Math.max(1, parseInt(env.DEFAULT_CONTACT_COUNT ?? "120", 10));
@@ -889,7 +900,7 @@ export default {
         try {
           phoneNumbers = await fetchPhonesFromActiveCampaign(
             brand,
-            body.tag || "SMS_BLAST",
+            tag,
             targetCount,
           );
           if (phoneNumbers.length > 0) {
@@ -911,11 +922,11 @@ export default {
       const total = phones.length;
       const item: Campaign = {
         id,
-        name: `${brand.name} — ${body.tag || "SMS_BLAST"}`,
-        messagePreview: preview(body.message || ""),
+        name: `${brand.name} — ${tag}`,
+        messagePreview: preview(message),
         brandId,
-        tag: body.tag || "SMS_BLAST",
-        message: body.message || "",
+        tag,
+        message,
         total,
         sent: 0,
         failed: 0,
@@ -986,6 +997,32 @@ export default {
         }
         await kvPutJSON(env.SMS_KV, key.campaignPhones(campaignId), phones);
         return json({ ok: true, queued: retriable.length });
+      }
+
+      if (
+        segments[2] === "phones" &&
+        segments[4] === "retry" &&
+        request.method === "POST"
+      ) {
+        const phoneId = segments[3];
+        if (!phoneId) return json({ ok: false, error: "Missing phone id" }, 400);
+        const base = await kvGetJSON<Campaign>(env.SMS_KV, key.campaign(campaignId));
+        const phones = await kvGetJSON<PhoneResult[]>(env.SMS_KV, key.campaignPhones(campaignId));
+        if (!base || base.deletedAt || !phones) return json({ ok: false, error: "Campaign not found" }, 404);
+        const idx = phones.findIndex((p) => p.id === phoneId);
+        if (idx === -1) return json({ ok: false, error: "Phone not found" }, 404);
+        if (phones[idx].status !== "Failed") {
+          return json({ ok: false, error: "Only failed phones can be retried" }, 400);
+        }
+        phones[idx] = { ...phones[idx], status: "Pending", error: undefined };
+        await env.CAMPAIGN_QUEUE.send({
+          campaignId,
+          phoneId: phones[idx].id,
+          phone: phones[idx].phone,
+          body: base.message,
+        });
+        await kvPutJSON(env.SMS_KV, key.campaignPhones(campaignId), phones);
+        return json({ ok: true, queued: 1 });
       }
 
       if (segments.length === 2 && request.method === "DELETE") {

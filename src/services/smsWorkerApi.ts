@@ -303,6 +303,12 @@ export async function fetchWorkerSentVsFailed() {
   )
 }
 
+export async function retryWorkerPhone(campaignId: string, phoneId: string) {
+  await requestJson(`/campaigns/${campaignId}/phones/${encodeURIComponent(phoneId)}/retry`, {
+    method: 'POST',
+  })
+}
+
 export async function fetchWorkerCampaignById(id: string) {
   const payload = (await requestJson(`/campaigns/${id}`)) as {
     ok?: boolean

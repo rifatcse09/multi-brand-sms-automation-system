@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft, RefreshCw, Trash2 } from 'lucide-react'
 import { Card, CardHeader } from '../components/ui/Card'
 import { Button } from '../components/ui/Button'
+import { Modal } from '../components/ui/Modal'
 import { ProgressBar } from '../components/ui/ProgressBar'
 import { TableWrap, Th, Td } from '../components/ui/Table'
 import { StatusBadge } from '../components/ui/Badge'
@@ -17,6 +18,7 @@ export function CampaignDetailPage() {
   const campaign = campaigns.find((c) => c.id === id)
   const [remoteCampaign, setRemoteCampaign] = useState<Campaign | null>(null)
   const [loadingRemote, setLoadingRemote] = useState(false)
+  const [deleteOpen, setDeleteOpen] = useState(false)
 
   useEffect(() => {
     if (!id || !isWorkerConfigured()) return
@@ -39,11 +41,34 @@ export function CampaignDetailPage() {
 
   const activeCampaign = useMemo<Campaign | null>(() => {
     if (!id) return null
-    if (remoteCampaign) {
-      if (!campaign) return remoteCampaign
-      return { ...remoteCampaign, important: campaign.important }
+    const local = campaign
+    const remote = remoteCampaign
+
+    if (remote && local) {
+      const localPhones = local.phones ?? []
+      const remotePhones = remote.phones ?? []
+      const useLocalDetail = localPhones.length > 0
+      const phones = useLocalDetail ? localPhones : remotePhones
+      const metrics = useLocalDetail ? local : remote
+      return {
+        ...remote,
+        ...local,
+        phones,
+        batches: metrics.batches ?? [],
+        sent: metrics.sent,
+        failed: metrics.failed,
+        queueProgress: metrics.queueProgress,
+        status: metrics.status,
+        total: metrics.total,
+        important: local.important,
+      }
     }
-    return campaign ?? null
+
+    if (remote) {
+      if (!local) return remote
+      return { ...remote, important: local.important }
+    }
+    return local ?? null
   }, [id, campaign, remoteCampaign])
 
   if (!activeCampaign) {
@@ -92,12 +117,7 @@ export function CampaignDetailPage() {
             variant="secondary"
             size="sm"
             className="text-red-600 hover:bg-red-50 hover:text-red-700"
-            onClick={() => {
-              if (window.confirm(`Delete campaign "${activeCampaign.name}"?`)) {
-                deleteCampaign(activeCampaign.id)
-                navigate('/campaigns')
-              }
-            }}
+            onClick={() => setDeleteOpen(true)}
           >
             <Trash2 className="h-4 w-4" />
             Delete
@@ -233,6 +253,35 @@ export function CampaignDetailPage() {
           </tbody>
         </TableWrap>
       </Card>
+
+      <Modal
+        open={deleteOpen}
+        onClose={() => setDeleteOpen(false)}
+        title="Delete campaign?"
+        description="This removes the campaign from your workspace."
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setDeleteOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              onClick={() => {
+                deleteCampaign(activeCampaign.id)
+                setDeleteOpen(false)
+                navigate('/campaigns')
+              }}
+            >
+              Delete
+            </Button>
+          </>
+        }
+      >
+        <p className="text-sm text-slate-600">
+          Delete <span className="font-medium text-slate-900">{activeCampaign.name}</span>? This
+          cannot be undone.
+        </p>
+      </Modal>
     </div>
   )
 }

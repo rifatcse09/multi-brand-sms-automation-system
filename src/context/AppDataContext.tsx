@@ -14,8 +14,10 @@ import {
   deleteWorkerBrand,
   fetchWorkerBrands,
   fetchWorkerCampaigns,
+  fetchWorkerCampaignById,
   fetchWorkerHealth,
   isWorkerConfigured,
+  retryWorkerPhone,
   updateWorkerBrand,
   deleteWorkerCampaign,
 } from '../services/smsWorkerApi'
@@ -249,20 +251,46 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     setCampaigns((prev) => prev.map((c) => (c.id === id ? { ...c, important } : c)))
   }, [])
 
-  const retryPhone = useCallback((campaignId: string, phoneId: string) => {
-    setCampaigns((prev) =>
-      prev.map((c) => {
-        if (c.id !== campaignId) return c
-        const phones = (c.phones ?? []).map((p) =>
-          p.id === phoneId
-            ? { ...p, status: 'Success' as const, error: undefined }
-            : p,
-        )
-        const failed = phones.filter((p) => p.status === 'Failed').length
-        return { ...c, phones, failed }
-      }),
-    )
-  }, [])
+  const retryPhone = useCallback(
+    async (campaignId: string, phoneId: string) => {
+      if (workerEnabled) {
+        try {
+          await retryWorkerPhone(campaignId, phoneId)
+          const res = await fetchWorkerCampaignById(campaignId)
+          const fresh = res.campaign
+          setCampaigns((prev) => {
+            const importantMap = new Map(prev.map((c) => [c.id, c.important]))
+            const merged = {
+              ...fresh,
+              important: importantMap.get(campaignId) ?? fresh.important,
+            }
+            const idx = prev.findIndex((c) => c.id === campaignId)
+            if (idx === -1) return [merged, ...prev]
+            return prev.map((c) => (c.id === campaignId ? merged : c))
+          })
+          setWorkerError(null)
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : 'Retry failed on backend.'
+          setWorkerError(msg)
+        }
+        return
+      }
+
+      setCampaigns((prev) =>
+        prev.map((c) => {
+          if (c.id !== campaignId) return c
+          const phones = (c.phones ?? []).map((p) =>
+            p.id === phoneId
+              ? { ...p, status: 'Success' as const, error: undefined }
+              : p,
+          )
+          const failed = phones.filter((p) => p.status === 'Failed').length
+          return { ...c, phones, failed }
+        }),
+      )
+    },
+    [workerEnabled],
+  )
 
   const deleteCampaignLocal = useCallback((campaignId: string) => {
     setCampaigns((prev) => prev.filter((c) => c.id !== campaignId))

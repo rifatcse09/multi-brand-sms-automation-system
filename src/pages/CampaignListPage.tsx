@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { Star, Filter, Plus, Trash2 } from 'lucide-react'
 import { Card, CardHeader } from '../components/ui/Card'
 import { Button } from '../components/ui/Button'
+import { Modal } from '../components/ui/Modal'
 import { Select } from '../components/ui/Select'
 import { TableWrap, Th, Td } from '../components/ui/Table'
 import { StatusBadge } from '../components/ui/Badge'
@@ -21,6 +22,7 @@ export function CampaignListPage() {
   const [brandFilter, setBrandFilter] = useState<string>('all')
   const [statusFilter, setStatusFilter] = useState<'all' | CampaignStatus>('all')
   const [importantFilter, setImportantFilter] = useState<'all' | 'important'>('all')
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null)
 
   const brandOptions = useMemo(() => {
     const ids = new Set(campaigns.map((c) => c.brandId))
@@ -189,9 +191,7 @@ export function CampaignListPage() {
                     aria-label="Delete campaign"
                     onClick={(e) => {
                       e.stopPropagation()
-                      if (window.confirm(`Delete campaign "${c.name}"?`)) {
-                        deleteCampaign(c.id)
-                      }
+                      setDeleteTarget({ id: c.id, name: c.name })
                     }}
                   >
                     <Trash2 className="h-4 w-4" />
@@ -202,6 +202,36 @@ export function CampaignListPage() {
           </tbody>
         </TableWrap>
       )}
+
+      <Modal
+        open={Boolean(deleteTarget)}
+        onClose={() => setDeleteTarget(null)}
+        title="Delete campaign?"
+        description="This removes the campaign from your workspace."
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setDeleteTarget(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              onClick={() => {
+                if (deleteTarget) deleteCampaign(deleteTarget.id)
+                setDeleteTarget(null)
+              }}
+            >
+              Delete
+            </Button>
+          </>
+        }
+      >
+        {deleteTarget ? (
+          <p className="text-sm text-slate-600">
+            Delete <span className="font-medium text-slate-900">{deleteTarget.name}</span>? This
+            cannot be undone.
+          </p>
+        ) : null}
+      </Modal>
     </div>
   )
 }
