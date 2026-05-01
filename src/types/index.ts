@@ -3,7 +3,7 @@ export type CampaignStatus = 'Running' | 'Completed' | 'Paused'
 export interface PhoneResult {
   id: string
   phone: string
-  status: 'Success' | 'Failed'
+  status: 'Pending' | 'Success' | 'Failed'
   error?: string
 }
 

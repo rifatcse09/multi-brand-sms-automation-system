@@ -211,10 +211,39 @@ function twilioTokenOk(request: Request, env: Env, url: URL) {
 function normalizePhone(raw: string | null): string | null {
   if (!raw) return null;
   const value = raw.trim();
-  if (value.startsWith("+")) return value;
+  if (value.startsWith("+")) {
+    const rest = value.slice(1).replace(/\D/g, "");
+    if (rest.length >= 8 && rest.length <= 15) return `+${rest}`;
+    return null;
+  }
   const digits = value.replace(/\D/g, "");
   if (digits.length === 10) return `+1${digits}`;
   if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+  return null;
+}
+
+function phoneFromActiveCampaignContact(contact: Record<string, unknown>): string | null {
+  const direct = normalizePhone(
+    (typeof contact.phone === "string" && contact.phone) ||
+      (typeof contact.mobile === "string" && contact.mobile) ||
+      null,
+  );
+  if (direct) return direct;
+  const fieldValues = contact.fieldValues as
+    | Array<{ value?: string | number | null }>
+    | undefined;
+  if (!Array.isArray(fieldValues)) return null;
+  for (const fv of fieldValues) {
+    const raw =
+      typeof fv.value === "string"
+        ? fv.value.trim()
+        : typeof fv.value === "number"
+          ? String(fv.value)
+          : "";
+    if (!raw) continue;
+    const n = normalizePhone(raw);
+    if (n) return n;
+  }
   return null;
 }
 
@@ -255,11 +284,10 @@ async function fetchPhonesFromActiveCampaign(
     `/api/3/tags?search=${encodeURIComponent(tagName)}`,
   );
   const tags = (tagResp.tags as Array<{ id?: string; tag?: string }> | undefined) ?? [];
-  const tag =
-    tags.find(
-      (t) =>
-        (t.tag || "").trim().toLowerCase() === tagName.trim().toLowerCase(),
-    ) ?? tags[0];
+  const exact = tags.find(
+    (t) => (t.tag || "").trim().toLowerCase() === tagName.trim().toLowerCase(),
+  );
+  const tag = exact ?? (tags.length === 1 ? tags[0] : undefined);
   if (!tag?.id) return [];
 
   const result: string[] = [];
@@ -271,11 +299,11 @@ async function fetchPhonesFromActiveCampaign(
       `/api/3/contacts?tagid=${encodeURIComponent(tag.id)}&limit=${pageSize}&offset=${offset}`,
     );
     const contacts =
-      (contactsResp.contacts as Array<{ phone?: string; mobile?: string }> | undefined) ?? [];
+      (contactsResp.contacts as Array<Record<string, unknown>> | undefined) ?? [];
     if (contacts.length === 0) break;
 
     for (const contact of contacts) {
-      const phone = normalizePhone(contact.phone || contact.mobile || null);
+      const phone = phoneFromActiveCampaignContact(contact);
       if (phone && !result.includes(phone)) {
         result.push(phone);
       }
@@ -923,7 +951,12 @@ export default {
         if (!base || base.deletedAt) return json({ ok: false, error: "Campaign not found" }, 404);
         const phones = (await kvGetJSON<PhoneResult[]>(env.SMS_KV, key.campaignPhones(campaignId))) ?? [];
         const counters = await getCampaignMeta(env, campaignId);
-        const detail = { ...base, phones, counters } as CampaignDetail & { counters: CampaignMeta };
+        const detail = {
+          ...base,
+          phones,
+          counters,
+          batches: [],
+        } as CampaignDetail & { counters: CampaignMeta; batches: [] };
         return json({ ok: true, campaign: detail });
       }
 

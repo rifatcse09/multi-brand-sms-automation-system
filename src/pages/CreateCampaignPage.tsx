@@ -22,15 +22,16 @@ export function CreateCampaignPage() {
     if (!brandId && brands[0]) setBrandId(brands[0].id)
   }, [brands, brandId])
 
-  const handleSubmit = (e: FormEvent) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
     if (!brandId) return
     setLoading(true)
-    window.setTimeout(() => {
-      const c = addCampaign({ brandId, tag: tag.trim(), message: message.trim() })
-      setLoading(false)
+    try {
+      const c = await addCampaign({ brandId, tag: tag.trim(), message: message.trim() })
       navigate(`/campaigns/${c.id}`)
-    }, 600)
+    } finally {
+      setLoading(false)
+    }
   }
 
   return (

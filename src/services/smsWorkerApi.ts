@@ -92,6 +92,75 @@ function compactMessage(message: string) {
   return message.length > 64 ? `${message.slice(0, 64)}...` : message
 }
 
+function mapWorkerCampaignRow(
+  item: WorkerMetric,
+  idx: number,
+  fallbackBrandId: string,
+): Campaign {
+  const rec = item as Record<string, unknown>
+  const id =
+    asString(rec.blast_id) ||
+    asString(rec.id) ||
+    asString(rec.bid) ||
+    `worker-blast-${idx + 1}`
+  const tag = asString(rec.tag, 'SMS_BLAST')
+  const message = asString(rec.msg) || asString(rec.message, '')
+  const messagePreview =
+    asString(rec.messagePreview) || (message ? compactMessage(message) : '')
+  const sent =
+    asNumber(rec.sent) ||
+    asNumber(rec.delivered) ||
+    asNumber(rec.success) ||
+    asNumber(rec.ok)
+  const failed =
+    asNumber(rec.failed) || asNumber(rec.errors) || asNumber(rec.undelivered)
+  const total =
+    asNumber(rec.total) ||
+    asNumber(rec.target_total) ||
+    asNumber(rec.contacts) ||
+    (sent + failed > 0 ? sent + failed : 0)
+  const pct = total > 0 ? Math.min(100, Math.round(((sent + failed) / total) * 100)) : 0
+  const statusRaw = asString(rec.status)
+  const status: CampaignStatus =
+    statusRaw === 'Running' || statusRaw === 'Completed' || statusRaw === 'Paused'
+      ? statusRaw
+      : statusRaw.length > 0
+        ? toCampaignStatus(statusRaw)
+        : pct >= 100
+          ? 'Completed'
+          : sent + failed > 0
+            ? 'Running'
+            : 'Paused'
+  const createdRaw =
+    asString(rec.created_at) ||
+    asString(rec.createdAt) ||
+    asString(rec.ts) ||
+    asString(rec.time)
+  const createdAt = createdRaw ? new Date(createdRaw).toISOString() : new Date().toISOString()
+  const brandId = asString(rec.brandId, fallbackBrandId)
+  const qp = asNumber(rec.queueProgress)
+
+  return {
+    id,
+    name: asString(rec.name) || `Blast ${id}`,
+    messagePreview,
+    brandId,
+    tag,
+    message: message || 'SMS blast message',
+    total,
+    sent,
+    failed,
+    status,
+    important: Boolean(rec.important),
+    createdAt,
+    deletedAt: rec.deletedAt ? asString(rec.deletedAt) : undefined,
+    batches: [],
+    phones: [],
+    queueProgress:
+      qp > 0 ? Math.min(100, qp) : status === 'Completed' ? 100 : pct,
+  }
+}
+
 export function isWorkerConfigured() {
   return Boolean(workerBaseUrl && workerSecret)
 }
@@ -113,62 +182,22 @@ export async function fetchWorkerCampaigns(fallbackBrandId: string): Promise<Cam
   const payload = await readJson(url)
   const items = parseMetricsArray(payload)
 
-  return items.map((item, idx) => {
-    const id =
-      asString(item.blast_id) ||
-      asString(item.id) ||
-      asString(item.bid) ||
-      `worker-blast-${idx + 1}`
-    const tag = asString(item.tag, 'SMS_BLAST')
-    const message = asString(item.msg) || asString(item.message, 'SMS blast message')
-    const sent =
-      asNumber(item.sent) ||
-      asNumber(item.delivered) ||
-      asNumber(item.success) ||
-      asNumber(item.ok)
-    const failed =
-      asNumber(item.failed) || asNumber(item.errors) || asNumber(item.undelivered)
-    const total =
-      asNumber(item.total) ||
-      asNumber(item.target_total) ||
-      asNumber(item.contacts) ||
-      sent + failed
-    const pct = total > 0 ? Math.min(100, Math.round(((sent + failed) / total) * 100)) : 0
-    const statusRaw = asString(item.status)
-    const status =
-      statusRaw.length > 0
-        ? toCampaignStatus(statusRaw)
-        : pct >= 100
-          ? 'Completed'
-          : sent + failed > 0
-            ? 'Running'
-            : 'Paused'
+  return items.map((item, idx) => mapWorkerCampaignRow(item, idx, fallbackBrandId))
+}
 
-    const createdRaw =
-      asString(item.created_at) ||
-      asString(item.createdAt) ||
-      asString(item.ts) ||
-      asString(item.time)
-    const createdAt = createdRaw ? new Date(createdRaw).toISOString() : new Date().toISOString()
-
-    return {
-      id,
-      name: asString(item.name) || `Blast ${id}`,
-      messagePreview: compactMessage(message),
-      brandId: fallbackBrandId,
-      tag,
-      message,
-      total,
-      sent,
-      failed,
-      status,
-      important: false,
-      createdAt,
-      batches: [],
-      phones: [],
-      queueProgress: status === 'Completed' ? 100 : pct,
-    } satisfies Campaign
-  })
+export async function createWorkerCampaign(input: {
+  id?: string
+  brandId: string
+  tag: string
+  message: string
+}) {
+  const payload = (await requestJson('/campaigns', {
+    method: 'POST',
+    body: input,
+  })) as { campaign?: WorkerMetric }
+  const raw = payload.campaign
+  if (!raw || typeof raw !== 'object') throw new Error('Invalid campaign response')
+  return mapWorkerCampaignRow(raw, 0, input.brandId)
 }
 
 export async function triggerWorkerBlast(input: {
@@ -275,8 +304,22 @@ export async function fetchWorkerSentVsFailed() {
 }
 
 export async function fetchWorkerCampaignById(id: string) {
-  const payload = await requestJson(`/campaigns/${id}`)
-  return payload as { ok: true; campaign: Campaign & { phones?: unknown[] } }
+  const payload = (await requestJson(`/campaigns/${id}`)) as {
+    ok?: boolean
+    campaign?: Campaign & { phones?: unknown[]; batches?: unknown[] }
+  }
+  const c = payload.campaign
+  if (!c || typeof c !== 'object') {
+    throw new Error('Worker returned no campaign payload')
+  }
+  return {
+    ok: true as const,
+    campaign: {
+      ...c,
+      batches: Array.isArray(c.batches) ? c.batches : [],
+      phones: (Array.isArray(c.phones) ? c.phones : []) as Campaign['phones'],
+    },
+  }
 }
 
 export async function deleteWorkerCampaign(id: string) {

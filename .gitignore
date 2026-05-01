@@ -24,6 +24,9 @@ dist-ssr
 *.sw?
 .env
 
+# Cloudflare Wrangler local state (dev, caches; recreated by `wrangler dev`)
+.wrangler/
+
 # Cloudflare worker local config
 cloudflare-worker/wrangler.toml
 cloudflare-worker/.dev.vars

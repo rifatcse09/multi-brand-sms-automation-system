@@ -6,12 +6,22 @@ const styles: Record<CampaignStatus, string> = {
   Paused: 'bg-amber-50 text-amber-800 ring-amber-600/10',
 }
 
-export function StatusBadge({ status }: { status: CampaignStatus }) {
+function normalizeStatus(status: CampaignStatus | string): CampaignStatus {
+  if (status === 'Running' || status === 'Completed' || status === 'Paused') return status
+  const s = String(status).toLowerCase()
+  if (s.includes('run')) return 'Running'
+  if (s.includes('pause')) return 'Paused'
+  if (s.includes('complete') || s.includes('done')) return 'Completed'
+  return 'Paused'
+}
+
+export function StatusBadge({ status }: { status: CampaignStatus | string }) {
+  const key = normalizeStatus(status)
   return (
     <span
-      className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ring-1 ring-inset ${styles[status]}`}
+      className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ring-1 ring-inset ${styles[key]}`}
     >
-      {status}
+      {key}
     </span>
   )
 }

@@ -10,12 +10,12 @@ import {
 import type { Brand, Campaign, CampaignStatus } from '../types'
 import {
   createWorkerBrand,
+  createWorkerCampaign,
   deleteWorkerBrand,
   fetchWorkerBrands,
   fetchWorkerCampaigns,
   fetchWorkerHealth,
   isWorkerConfigured,
-  triggerWorkerBlast,
   updateWorkerBrand,
   deleteWorkerCampaign,
 } from '../services/smsWorkerApi'
@@ -39,7 +39,7 @@ type AppDataContextValue = {
     brandId: string
     tag: string
     message: string
-  }) => Campaign
+  }) => Promise<Campaign>
   setCampaignImportant: (id: string, important: boolean) => void
   retryPhone: (campaignId: string, phoneId: string) => void
   deleteCampaign: (campaignId: string) => void
@@ -154,8 +154,37 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
   }, [workerEnabled])
 
   const addCampaign = useCallback(
-    (input: { brandId: string; tag: string; message: string }) => {
-      const id = workerEnabled ? `blast-${Date.now()}` : nextId('camp')
+    async (input: { brandId: string; tag: string; message: string }) => {
+      if (workerEnabled) {
+        const id = `blast-${Date.now()}`
+        try {
+          const campaign = await createWorkerCampaign({
+            id,
+            brandId: input.brandId,
+            tag: input.tag,
+            message: input.message,
+          })
+          setCampaigns((prev) => {
+            const importantMap = new Map(prev.map((c) => [c.id, c.important]))
+            const merged = {
+              ...campaign,
+              important: importantMap.get(campaign.id) ?? campaign.important,
+            }
+            const rest = prev.filter((c) => c.id !== merged.id)
+            return [merged, ...rest]
+          })
+          setWorkerError(null)
+          await syncCampaignsFromWorker()
+          return campaign
+        } catch (e) {
+          const msg =
+            e instanceof Error ? e.message : 'Campaign creation failed on backend.'
+          setWorkerError(msg)
+          throw e
+        }
+      }
+
+      const id = nextId('camp')
       const preview =
         input.message.length > 64 ? `${input.message.slice(0, 64)}…` : input.message
       const total = 800 + Math.floor(Math.random() * 400)
@@ -211,20 +240,6 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
         queueProgress: Math.round((sent / total) * 100),
       }
       setCampaigns((prev) => [campaign, ...prev])
-      if (workerEnabled) {
-        void (async () => {
-          try {
-            await triggerWorkerBlast({
-              tag: input.tag,
-              message: input.message,
-              blastId: id,
-            })
-            await syncCampaignsFromWorker()
-          } catch {
-            /* optimistic campaign stays visible when worker rejects */
-          }
-        })()
-      }
       return campaign
     },
     [getBrandName, syncCampaignsFromWorker, workerEnabled],
@@ -238,7 +253,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     setCampaigns((prev) =>
       prev.map((c) => {
         if (c.id !== campaignId) return c
-        const phones = c.phones.map((p) =>
+        const phones = (c.phones ?? []).map((p) =>
           p.id === phoneId
             ? { ...p, status: 'Success' as const, error: undefined }
             : p,

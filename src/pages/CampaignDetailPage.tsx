@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft, RefreshCw, Trash2 } from 'lucide-react'
 import { Card, CardHeader } from '../components/ui/Card'
@@ -19,21 +19,32 @@ export function CampaignDetailPage() {
   const [loadingRemote, setLoadingRemote] = useState(false)
 
   useEffect(() => {
-    if (!id || campaign || !isWorkerConfigured()) return
+    if (!id || !isWorkerConfigured()) return
+    let cancelled = false
     setLoadingRemote(true)
     void (async () => {
       try {
         const res = await fetchWorkerCampaignById(id)
-        setRemoteCampaign(res.campaign)
+        if (!cancelled) setRemoteCampaign(res.campaign as Campaign)
       } catch {
-        setRemoteCampaign(null)
+        if (!cancelled) setRemoteCampaign(null)
       } finally {
-        setLoadingRemote(false)
+        if (!cancelled) setLoadingRemote(false)
       }
     })()
-  }, [id, campaign])
+    return () => {
+      cancelled = true
+    }
+  }, [id])
 
-  const activeCampaign = campaign ?? remoteCampaign
+  const activeCampaign = useMemo<Campaign | null>(() => {
+    if (!id) return null
+    if (remoteCampaign) {
+      if (!campaign) return remoteCampaign
+      return { ...remoteCampaign, important: campaign.important }
+    }
+    return campaign ?? null
+  }, [id, campaign, remoteCampaign])
 
   if (!activeCampaign) {
     return (
@@ -52,6 +63,9 @@ export function CampaignDetailPage() {
 
   const pct =
     activeCampaign.total > 0 ? Math.round((activeCampaign.sent / activeCampaign.total) * 100) : 0
+
+  const batches = activeCampaign.batches ?? []
+  const phones = activeCampaign.phones ?? []
 
   return (
     <div className="space-y-6">
@@ -131,13 +145,13 @@ export function CampaignDetailPage() {
 
       <Card padding="md">
         <CardHeader title="Batch progress" description="Parallel workers split the audience into batches." />
-        {activeCampaign.batches.length === 0 ? (
+        {batches.length === 0 ? (
           <p className="text-sm text-slate-500">
             No batch data exposed by this backend response yet.
           </p>
         ) : (
           <div className="space-y-3">
-            {activeCampaign.batches.map((b) => (
+            {batches.map((b) => (
               <div
                 key={b.id}
                 className="rounded-lg border border-slate-100 bg-white p-4 shadow-[var(--shadow-soft)]"
@@ -171,14 +185,16 @@ export function CampaignDetailPage() {
             </tr>
           </thead>
           <tbody>
-            {activeCampaign.phones.length === 0 ? (
+            {phones.length === 0 ? (
               <tr>
                 <Td colSpan={4} className="py-8 text-center text-sm text-slate-500">
-                  No phone-level rows are available from the current endpoint.
+                  {loadingRemote
+                    ? 'Loading phone list from Worker…'
+                    : 'No phone-level rows are available from the current endpoint.'}
                 </Td>
               </tr>
             ) : (
-              activeCampaign.phones.map((p) => (
+              phones.map((p) => (
                 <tr key={p.id} className="hover:bg-slate-50/80">
                   <Td className="font-mono text-xs sm:text-sm">{p.phone}</Td>
                   <Td>
@@ -186,7 +202,9 @@ export function CampaignDetailPage() {
                       className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${
                         p.status === 'Success'
                           ? 'bg-emerald-50 text-emerald-800 ring-1 ring-emerald-600/10'
-                          : 'bg-red-50 text-red-800 ring-1 ring-red-600/10'
+                          : p.status === 'Pending'
+                            ? 'bg-slate-100 text-slate-700 ring-1 ring-slate-400/20'
+                            : 'bg-red-50 text-red-800 ring-1 ring-red-600/10'
                       }`}
                     >
                       {p.status}
