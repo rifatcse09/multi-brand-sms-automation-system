@@ -89,6 +89,14 @@ export function CampaignDetailPage() {
 
   const pct =
     activeCampaign.total > 0 ? Math.round((activeCampaign.sent / activeCampaign.total) * 100) : 0
+  const scheduledLabel =
+    activeCampaign.scheduleAtLocal && activeCampaign.scheduleTimezone
+      ? `${activeCampaign.scheduleAtLocal.replace('T', ' ')} (${activeCampaign.scheduleTimezone})`
+      : activeCampaign.scheduledAtUtc
+        ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(
+            new Date(activeCampaign.scheduledAtUtc),
+          )
+        : null
 
   const batches = activeCampaign.batches ?? []
   const phones = activeCampaign.phones ?? []
@@ -111,6 +119,9 @@ export function CampaignDetailPage() {
             {getBrandName(activeCampaign.brandId)} · Tag{' '}
             <span className="font-mono text-slate-700">{activeCampaign.tag}</span>
           </p>
+          {activeCampaign.status === 'Scheduled' && scheduledLabel ? (
+            <p className="mt-1 text-sm font-medium text-purple-700">Scheduled at: {scheduledLabel}</p>
+          ) : null}
         </div>
         <div className="flex items-center gap-2">
           <StatusBadge status={activeCampaign.status} />

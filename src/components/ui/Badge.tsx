@@ -4,12 +4,14 @@ const styles: Record<CampaignStatus, string> = {
   Running: 'bg-blue-50 text-blue-700 ring-blue-600/10',
   Completed: 'bg-emerald-50 text-emerald-700 ring-emerald-600/10',
   Paused: 'bg-amber-50 text-amber-800 ring-amber-600/10',
+  Scheduled: 'bg-purple-50 text-purple-700 ring-purple-600/10',
 }
 
 function normalizeStatus(status: CampaignStatus | string): CampaignStatus {
-  if (status === 'Running' || status === 'Completed' || status === 'Paused') return status
+  if (status === 'Running' || status === 'Completed' || status === 'Paused' || status === 'Scheduled') return status
   const s = String(status).toLowerCase()
   if (s.includes('run')) return 'Running'
+  if (s.includes('sched')) return 'Scheduled'
   if (s.includes('pause')) return 'Paused'
   if (s.includes('complete') || s.includes('done')) return 'Completed'
   return 'Paused'

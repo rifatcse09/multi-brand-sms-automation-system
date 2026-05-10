@@ -16,6 +16,9 @@ queue = "sms-campaign-queue"
 max_batch_size = 50
 max_batch_timeout = 10
 
+[triggers]
+crons = ["* * * * *", "*/15 * * * *"]
+
 [vars]
 SEND_MODE = "mock"
 DEFAULT_BRAND_ID = "brand-default"

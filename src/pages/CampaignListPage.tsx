@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { useEffect, useMemo, useState } from 'react'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { Star, Filter, Plus, Trash2 } from 'lucide-react'
 import { Card, CardHeader } from '../components/ui/Card'
 import { Button } from '../components/ui/Button'
@@ -16,10 +16,12 @@ import type { CampaignStatus } from '../types'
 
 export function CampaignListPage() {
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const { campaigns, getBrandName, setCampaignImportant, deleteCampaign } = useAppData()
   const ready = useDelayedReady()
 
-  const [brandFilter, setBrandFilter] = useState<string>('all')
+  const initialBrand = searchParams.get('brand')?.trim() || 'all'
+  const [brandFilter, setBrandFilter] = useState<string>(initialBrand)
   const [statusFilter, setStatusFilter] = useState<'all' | CampaignStatus>('all')
   const [importantFilter, setImportantFilter] = useState<'all' | 'important'>('all')
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null)
@@ -28,6 +30,20 @@ export function CampaignListPage() {
     const ids = new Set(campaigns.map((c) => c.brandId))
     return [...ids]
   }, [campaigns])
+
+  useEffect(() => {
+    const paramBrand = searchParams.get('brand')?.trim() || 'all'
+    setBrandFilter(paramBrand)
+  }, [searchParams])
+
+  useEffect(() => {
+    const current = searchParams.get('brand')?.trim() || 'all'
+    if (current === brandFilter) return
+    const next = new URLSearchParams(searchParams)
+    if (brandFilter !== 'all') next.set('brand', brandFilter)
+    else next.delete('brand')
+    setSearchParams(next, { replace: true })
+  }, [brandFilter, searchParams, setSearchParams])
 
   const filtered = useMemo(() => {
     return campaigns.filter((c) => {
@@ -42,6 +58,11 @@ export function CampaignListPage() {
     new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(
       new Date(iso),
     )
+  const shortPreview = (text: string) => {
+    const words = text.trim().split(/\s+/).filter(Boolean)
+    if (words.length <= 8) return text
+    return `${words.slice(0, 8).join(' ')}...`
+  }
 
   return (
     <div className="space-y-6">
@@ -88,6 +109,7 @@ export function CampaignListPage() {
             >
               <option value="all">All statuses</option>
               <option value="Running">Running</option>
+              <option value="Scheduled">Scheduled</option>
               <option value="Completed">Completed</option>
               <option value="Paused">Paused</option>
             </Select>
@@ -167,13 +189,21 @@ export function CampaignListPage() {
                 </Td>
                 <Td>
                   <p className="font-medium text-slate-900">{c.name}</p>
-                  <p className="mt-0.5 line-clamp-2 text-xs text-slate-500 sm:line-clamp-1">
-                    {c.messagePreview}
+                  <p className="mt-0.5 truncate text-xs text-slate-500">
+                    {shortPreview(c.messagePreview)}
                   </p>
                   {c.status === 'Running' ? (
                     <div className="mt-2 max-w-md" onClick={(e) => e.stopPropagation()}>
                       <ProgressBar value={c.queueProgress} />
                     </div>
+                  ) : null}
+                  {c.status === 'Scheduled' && c.scheduledAtUtc ? (
+                    <p className="mt-1 text-xs text-purple-700">
+                      Scheduled:{' '}
+                      {c.scheduleAtLocal && c.scheduleTimezone
+                        ? `${c.scheduleAtLocal.replace('T', ' ')} (${c.scheduleTimezone})`
+                        : formatDate(c.scheduledAtUtc)}
+                    </p>
                   ) : null}
                 </Td>
                 <Td className="hidden text-slate-600 lg:table-cell">{getBrandName(c.brandId)}</Td>

@@ -1,6 +1,38 @@
 import type { Brand, Campaign, CampaignStatus } from '../types'
 
 type WorkerMetric = Record<string, unknown>
+export type WorkerBrandTag = { id: string; tag: string }
+export type WorkerSubscriberCacheStatus = 'fresh' | 'partial' | 'stale'
+
+export type WorkerSubscriberBrand = {
+  brandId: string
+  brandName: string
+  allContacts: number
+  totalSubscribers: number
+  activeSmsSubscribers: number
+  unsubscribedTotal: number
+  growth: number
+  todayActive: number
+  yesterdayActive: number
+  status: WorkerSubscriberCacheStatus
+  fetchOk: boolean
+  fetchError: string
+  updatedAt: string
+  walkedOffset: number
+  walkedTotal: number
+  walkDone: boolean
+}
+
+export type WorkerSubscriberSummary = {
+  totalContacts: number
+  totalSubscribers: number
+  activeSmsSubscribers: number
+  unsubscribedTotal: number
+  growth: number
+  todayActive: number
+  yesterdayActive: number
+  byBrand: WorkerSubscriberBrand[]
+}
 
 const workerBaseUrl = import.meta.env.VITE_SMS_WORKER_BASE_URL?.replace(/\/+$/, '')
 const workerSecret = import.meta.env.VITE_SMS_WORKER_SECRET
@@ -82,6 +114,7 @@ function parseMetricsArray(payload: unknown): WorkerMetric[] {
 
 function toCampaignStatus(value: string): CampaignStatus {
   const normalized = value.toLowerCase()
+  if (normalized.includes('sched')) return 'Scheduled'
   if (normalized.includes('pause')) return 'Paused'
   if (normalized.includes('run') || normalized.includes('progress')) return 'Running'
   if (normalized.includes('done') || normalized.includes('complete')) return 'Completed'
@@ -122,7 +155,10 @@ function mapWorkerCampaignRow(
   const pct = total > 0 ? Math.min(100, Math.round(((sent + failed) / total) * 100)) : 0
   const statusRaw = asString(rec.status)
   const status: CampaignStatus =
-    statusRaw === 'Running' || statusRaw === 'Completed' || statusRaw === 'Paused'
+    statusRaw === 'Running' ||
+    statusRaw === 'Completed' ||
+    statusRaw === 'Paused' ||
+    statusRaw === 'Scheduled'
       ? statusRaw
       : statusRaw.length > 0
         ? toCampaignStatus(statusRaw)
@@ -154,6 +190,9 @@ function mapWorkerCampaignRow(
     important: Boolean(rec.important),
     createdAt,
     deletedAt: rec.deletedAt ? asString(rec.deletedAt) : undefined,
+    scheduledAtUtc: asString(rec.scheduledAtUtc) || undefined,
+    scheduleTimezone: asString(rec.scheduleTimezone) || undefined,
+    scheduleAtLocal: asString(rec.scheduleAtLocal) || undefined,
     batches: [],
     phones: [],
     queueProgress:
@@ -190,6 +229,9 @@ export async function createWorkerCampaign(input: {
   brandId: string
   tag: string
   message: string
+  scheduledAtUtc?: string
+  scheduleTimezone?: string
+  scheduleAtLocal?: string
 }) {
   const payload = (await requestJson('/campaigns', {
     method: 'POST',
@@ -295,12 +337,81 @@ export async function deleteWorkerBrand(id: string) {
   return payload as { ok: true }
 }
 
+export async function fetchWorkerBrandTags(brandId: string) {
+  const payload = await requestJson(`/brands/${encodeURIComponent(brandId)}/activecampaign/tags`)
+  return ((payload.tags as WorkerBrandTag[] | undefined) ?? []).filter(
+    (x) => typeof x?.id === 'string' && typeof x?.tag === 'string',
+  )
+}
+
 export async function fetchWorkerSentVsFailed() {
   const payload = await requestJson('/analytics/sent-failed')
   return (
     (payload.sentVsFailed as Array<{ label: string; sent: number; failed: number }> | undefined) ??
     []
   )
+}
+
+function asCacheStatus(value: unknown): WorkerSubscriberCacheStatus {
+  return value === 'fresh' || value === 'partial' || value === 'stale' ? value : 'stale'
+}
+
+function mapSubscriberBrand(x: Record<string, unknown>): WorkerSubscriberBrand {
+  const allContacts = asNumber(x.allContacts, 0)
+  return {
+    brandId: asString(x.brandId),
+    brandName: asString(x.brandName),
+    allContacts,
+    totalSubscribers: asNumber(x.totalSubscribers, 0),
+    activeSmsSubscribers: asNumber(x.activeSmsSubscribers, 0),
+    unsubscribedTotal: asNumber(x.unsubscribedTotal, 0),
+    growth: asNumber(x.growth, 0),
+    todayActive: asNumber(x.todayActive, 0),
+    yesterdayActive: asNumber(x.yesterdayActive, 0),
+    status: asCacheStatus(x.status),
+    fetchOk: Boolean(x.fetchOk),
+    fetchError: asString(x.fetchError),
+    updatedAt: asString(x.updatedAt),
+    walkedOffset: asNumber(x.walkedOffset, 0),
+    walkedTotal: asNumber(x.walkedTotal, allContacts),
+    walkDone: Boolean(x.walkDone),
+  }
+}
+
+export async function fetchWorkerSubscriberSummary(): Promise<WorkerSubscriberSummary> {
+  const payload = (await requestJson('/analytics/subscribers-summary')) as {
+    summary?: Partial<WorkerSubscriberSummary>
+  }
+  const s = payload.summary ?? {}
+  const byBrandRaw = Array.isArray((s as { byBrand?: unknown }).byBrand)
+    ? ((s as { byBrand: Array<Record<string, unknown>> }).byBrand ?? [])
+    : []
+  return {
+    totalSubscribers: asNumber(s.totalSubscribers, 0),
+    totalContacts: asNumber(s.totalContacts, 0),
+    activeSmsSubscribers: asNumber(s.activeSmsSubscribers, 0),
+    unsubscribedTotal: asNumber(s.unsubscribedTotal, 0),
+    growth: asNumber(s.growth, 0),
+    todayActive: asNumber(s.todayActive, 0),
+    yesterdayActive: asNumber(s.yesterdayActive, 0),
+    byBrand: byBrandRaw.map(mapSubscriberBrand),
+  }
+}
+
+export async function refreshWorkerSubscribers(input: {
+  brandId?: string
+  maxPages?: number
+}): Promise<WorkerSubscriberBrand[]> {
+  const params: Record<string, string> = {
+    brandId: input.brandId ?? 'all',
+    maxPages: String(Math.max(1, Math.min(input.maxPages ?? 20, 20))),
+  }
+  const payload = (await requestJson('/analytics/subscribers-summary/refresh', {
+    method: 'POST',
+    params,
+  })) as { brands?: Array<Record<string, unknown>> }
+  const rows = Array.isArray(payload.brands) ? payload.brands : []
+  return rows.map(mapSubscriberBrand)
 }
 
 export async function retryWorkerPhone(campaignId: string, phoneId: string) {

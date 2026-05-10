@@ -1,4 +1,4 @@
-export type CampaignStatus = 'Running' | 'Completed' | 'Paused'
+export type CampaignStatus = 'Running' | 'Completed' | 'Paused' | 'Scheduled'
 
 export interface PhoneResult {
   id: string
@@ -42,6 +42,9 @@ export interface Campaign {
   phones: PhoneResult[]
   /** Overall queue progress for running campaigns (0–100) */
   queueProgress: number
+  scheduledAtUtc?: string
+  scheduleTimezone?: string
+  scheduleAtLocal?: string
 }
 
 export interface Brand {

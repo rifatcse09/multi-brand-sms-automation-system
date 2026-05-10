@@ -41,6 +41,9 @@ type AppDataContextValue = {
     brandId: string
     tag: string
     message: string
+    scheduledAtUtc?: string
+    scheduleTimezone?: string
+    scheduleAtLocal?: string
   }) => Promise<Campaign>
   setCampaignImportant: (id: string, important: boolean) => void
   retryPhone: (campaignId: string, phoneId: string) => void
@@ -156,7 +159,14 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
   }, [workerEnabled])
 
   const addCampaign = useCallback(
-    async (input: { brandId: string; tag: string; message: string }) => {
+    async (input: {
+      brandId: string
+      tag: string
+      message: string
+      scheduledAtUtc?: string
+      scheduleTimezone?: string
+      scheduleAtLocal?: string
+    }) => {
       if (workerEnabled) {
         const id = `blast-${Date.now()}`
         try {
@@ -165,6 +175,9 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
             brandId: input.brandId,
             tag: input.tag,
             message: input.message,
+            scheduledAtUtc: input.scheduledAtUtc,
+            scheduleTimezone: input.scheduleTimezone,
+            scheduleAtLocal: input.scheduleAtLocal,
           })
           setCampaigns((prev) => {
             const importantMap = new Map(prev.map((c) => [c.id, c.important]))
@@ -234,12 +247,15 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
         total,
         sent,
         failed,
-        status: 'Running' as CampaignStatus,
+        status: (input.scheduledAtUtc ? 'Scheduled' : 'Running') as CampaignStatus,
         important: false,
         createdAt: new Date().toISOString(),
+        scheduledAtUtc: input.scheduledAtUtc,
+        scheduleTimezone: input.scheduleTimezone,
+        scheduleAtLocal: input.scheduleAtLocal,
         batches,
         phones,
-        queueProgress: Math.round((sent / total) * 100),
+        queueProgress: input.scheduledAtUtc ? 0 : Math.round((sent / total) * 100),
       }
       setCampaigns((prev) => [campaign, ...prev])
       return campaign
