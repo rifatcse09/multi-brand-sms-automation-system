@@ -56,4 +56,6 @@ export interface Brand {
   messagingServiceSid: string
   activeCampaignApiUrl: string
   activeCampaignApiKey: string
+  /** ActiveCampaign tag for dashboard audience + default campaign tag. */
+  dashboardTag?: string
 }

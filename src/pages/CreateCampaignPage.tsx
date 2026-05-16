@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { ChevronDown } from 'lucide-react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Card, CardHeader } from '../components/ui/Card'
 import { Label } from '../components/ui/Label'
 import { Input } from '../components/ui/Input'
@@ -9,18 +8,21 @@ import { Select } from '../components/ui/Select'
 import { Button } from '../components/ui/Button'
 import { useAppData } from '../context/AppDataContext'
 import { fetchWorkerBrandTags, type WorkerBrandTag } from '../services/smsWorkerApi'
+import { TagPicker } from '../components/brands/TagPicker'
 
 export function CreateCampaignPage() {
   const { brands, addCampaign, workerLinked } = useAppData()
   const navigate = useNavigate()
-  const [brandId, setBrandId] = useState('')
-  const [tag, setTag] = useState('')
+  const [searchParams] = useSearchParams()
+  const urlBrandId = searchParams.get('brand')?.trim() ?? ''
+  const urlTag = searchParams.get('tag')?.trim() ?? ''
+  const [brandId, setBrandId] = useState(urlBrandId)
+  const [tag, setTag] = useState(urlTag)
   const [message, setMessage] = useState('')
   const [loading, setLoading] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
   const [tags, setTags] = useState<WorkerBrandTag[]>([])
   const [loadingTags, setLoadingTags] = useState(false)
-  const [showTagMenu, setShowTagMenu] = useState(false)
   const [scheduleLater, setScheduleLater] = useState(false)
   const [scheduleTimezone, setScheduleTimezone] = useState(
     Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
@@ -86,21 +88,29 @@ export function CreateCampaignPage() {
     return new Date(utcMs).toISOString()
   }
 
+  const resolvedBrandId = useMemo(() => {
+    if (brandId && brands.some((b) => b.id === brandId)) return brandId
+    if (urlBrandId && brands.some((b) => b.id === urlBrandId)) return urlBrandId
+    return brandId
+  }, [brandId, urlBrandId, brands])
+
   useEffect(() => {
-    if (!brandId || !workerLinked) {
-      setTags([])
-      setTag('')
-      return
-    }
+    if (!resolvedBrandId || !workerLinked) return
     let cancelled = false
     setLoadingTags(true)
     setFormError(null)
     void (async () => {
       try {
-        const next = await fetchWorkerBrandTags(brandId)
+        const next = await fetchWorkerBrandTags(resolvedBrandId)
         if (cancelled) return
         setTags(next)
-        setTag((prev) => (next.some((t) => t.tag === prev) ? prev : ''))
+        const brandDefault = brands.find((b) => b.id === resolvedBrandId)?.dashboardTag?.trim()
+        const prefer = urlTag || brandDefault || ''
+        if (prefer && next.some((t) => t.tag === prefer)) {
+          setTag(prefer)
+        } else {
+          setTag((prev) => (prev && next.some((t) => t.tag === prev) ? prev : ''))
+        }
       } catch (e) {
         if (cancelled) return
         setTags([])
@@ -114,20 +124,14 @@ export function CreateCampaignPage() {
     return () => {
       cancelled = true
     }
-  }, [brandId, workerLinked])
-
-  const filteredTags = useMemo(() => {
-    const q = tag.trim().toLowerCase()
-    if (!q) return tags
-    return tags.filter((t) => t.tag.toLowerCase().includes(q))
-  }, [tags, tag])
+  }, [resolvedBrandId, workerLinked, brands, urlTag])
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
     setFormError(null)
     const tagTrim = tag.trim()
     const messageTrim = message.trim()
-    if (!brandId) {
+    if (!resolvedBrandId) {
       setFormError('Choose a brand.')
       return
     }
@@ -159,7 +163,7 @@ export function CreateCampaignPage() {
     setLoading(true)
     try {
       const c = await addCampaign({
-        brandId,
+        brandId: resolvedBrandId,
         tag: tagTrim,
         message: messageTrim,
         scheduledAtUtc,
@@ -205,8 +209,13 @@ export function CreateCampaignPage() {
               </Label>
               <Select
                 id="brand"
-                value={brandId}
-                onChange={(e) => setBrandId(e.target.value)}
+                value={resolvedBrandId}
+                onChange={(e) => {
+                  const nextId = e.target.value
+                  setBrandId(nextId)
+                  const defaultTag = brands.find((b) => b.id === nextId)?.dashboardTag?.trim()
+                  setTag(defaultTag || '')
+                }}
                 required
               >
                 <option value="">Select Brand</option>
@@ -217,60 +226,18 @@ export function CreateCampaignPage() {
                 ))}
               </Select>
             </div>
-            <div className="relative">
-              <Label htmlFor="tag" required>
-                Tag (ActiveCampaign)
-              </Label>
-              <div className="relative">
-                <Input
-                  id="tag"
-                  value={tag}
-                  onChange={(e) => setTag(e.target.value)}
-                  disabled={!brandId || loadingTags || tags.length === 0}
-                  onFocus={() => setShowTagMenu(true)}
-                  onBlur={() => {
-                    window.setTimeout(() => setShowTagMenu(false), 120)
-                  }}
-                  placeholder={
-                    !brandId
-                      ? 'Select Tag'
-                      : 
-                    loadingTags
-                      ? 'Loading tags...'
-                      : tags.length > 0
-                        ? 'Type to search tags'
-                        : 'No ActiveCampaign tags found for this brand'
-                  }
-                  className="pr-9"
-                />
-                <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-              </div>
-              {showTagMenu ? (
-                <div className="absolute z-20 mt-1 max-h-56 w-full overflow-auto rounded-lg border border-slate-300 bg-white shadow-lg">
-                  {filteredTags.length > 0 ? (
-                    filteredTags.map((t) => (
-                      <button
-                        key={t.id}
-                        type="button"
-                        className="block w-full px-3 py-2 text-left text-sm text-slate-700 hover:bg-blue-50"
-                        onMouseDown={(e) => {
-                          e.preventDefault()
-                          setTag(t.tag)
-                          setShowTagMenu(false)
-                        }}
-                      >
-                        {t.tag}
-                      </button>
-                    ))
-                  ) : (
-                    <p className="px-3 py-2 text-sm text-slate-500">No matching tags</p>
-                  )}
-                </div>
-              ) : null}
-              <p className="mt-1.5 text-xs text-slate-500">
-                Start typing to search tag names from the selected brand.
-              </p>
-            </div>
+            <TagPicker
+              id="tag"
+              label="Tag (ActiveCampaign)"
+              required
+              value={tag}
+              onChange={setTag}
+              tags={tags}
+              loading={loadingTags}
+              disabled={!resolvedBrandId}
+              placeholder={!resolvedBrandId ? 'Select a brand first' : undefined}
+              helperText="Pre-filled from the dashboard when you open this page from a brand card."
+            />
             <div>
               <Label htmlFor="message" required>
                 Message
@@ -330,7 +297,7 @@ export function CreateCampaignPage() {
               ) : null}
             </div>
             <div className="flex flex-wrap gap-2 pt-2">
-              <Button type="submit" loading={loading} disabled={!brandId || !tag}>
+              <Button type="submit" loading={loading} disabled={!resolvedBrandId || !tag}>
                 {scheduleLater ? 'Schedule campaign' : 'Send campaign'}
               </Button>
               <Button type="button" variant="secondary" onClick={() => navigate('/campaigns')}>

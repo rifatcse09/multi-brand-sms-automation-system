@@ -9,13 +9,15 @@ type ModalProps = {
   onClose: () => void
   children: ReactNode
   footer?: ReactNode
-  size?: 'sm' | 'md' | 'lg'
+  size?: 'sm' | 'md' | 'lg' | 'xl'
+  bodyClassName?: string
 }
 
 const widths: Record<NonNullable<ModalProps['size']>, string> = {
   sm: 'max-w-md',
   md: 'max-w-lg',
   lg: 'max-w-2xl',
+  xl: 'max-w-3xl',
 }
 
 export function Modal({
@@ -26,6 +28,7 @@ export function Modal({
   children,
   footer,
   size = 'md',
+  bodyClassName = '',
 }: ModalProps) {
   useEffect(() => {
     if (!open) return
@@ -73,11 +76,13 @@ export function Modal({
             <X className="h-4 w-4" />
           </Button>
         </div>
-        <div className="max-h-[min(70vh,640px)] overflow-y-auto px-5 py-4 sm:px-6 sm:py-5">
+        <div
+          className={`max-h-[min(75vh,720px)] overflow-y-auto px-5 py-5 sm:px-6 sm:py-6 ${bodyClassName}`.trim()}
+        >
           {children}
         </div>
         {footer ? (
-          <div className="flex flex-col-reverse gap-2 border-t border-slate-100 px-5 py-4 sm:flex-row sm:justify-end sm:px-6">
+          <div className="relative z-0 flex flex-col-reverse gap-2 border-t border-slate-100 bg-white px-5 py-4 sm:flex-row sm:justify-end sm:px-6">
             {footer}
           </div>
         ) : null}

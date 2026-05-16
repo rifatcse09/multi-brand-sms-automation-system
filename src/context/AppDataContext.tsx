@@ -34,8 +34,8 @@ type AppDataContextValue = {
   campaigns: Campaign[]
   workerLinked: boolean
   workerError: string | null
-  addBrand: (brand: Omit<Brand, 'id'>) => void
-  updateBrand: (id: string, patch: Partial<Brand>) => void
+  addBrand: (brand: Omit<Brand, 'id'>) => Promise<Brand>
+  updateBrand: (id: string, patch: Partial<Brand>) => Promise<Brand | void>
   deleteBrand: (id: string) => void
   addCampaign: (input: {
     brandId: string
@@ -121,32 +121,47 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     [brands],
   )
 
-  const addBrand = useCallback((brand: Omit<Brand, 'id'>) => {
-    const optimistic = { ...brand, id: nextId('brand') }
-    setBrands((prev) => [...prev, optimistic])
-    if (workerEnabled) {
-      void (async () => {
-        try {
-          const created = await createWorkerBrand(brand)
-          setBrands((prev) =>
-            prev.map((b) => (b.id === optimistic.id ? created.brand : b)),
-          )
-          setWorkerError(null)
-        } catch {
-          setWorkerError('Brand save failed on backend. Check Worker secret/env.')
-        }
-      })()
-    }
-  }, [workerEnabled])
+  const addBrand = useCallback(
+    async (brand: Omit<Brand, 'id'>) => {
+      const optimistic = { ...brand, id: nextId('brand') }
+      setBrands((prev) => [...prev, optimistic])
+      if (!workerEnabled) return optimistic
+      try {
+        const created = await createWorkerBrand(brand)
+        setBrands((prev) => prev.map((b) => (b.id === optimistic.id ? created.brand : b)))
+        setWorkerError(null)
+        return created.brand
+      } catch {
+        setWorkerError('Brand save failed on backend. Check Worker secret/env.')
+        throw new Error('Brand save failed')
+      }
+    },
+    [workerEnabled],
+  )
 
-  const updateBrand = useCallback((id: string, patch: Partial<Brand>) => {
-    setBrands((prev) => prev.map((b) => (b.id === id ? { ...b, ...patch } : b)))
-    if (workerEnabled) {
-      void updateWorkerBrand(id, patch).catch(() => {
+  const updateBrand = useCallback(
+    async (id: string, patch: Partial<Brand>) => {
+      let merged: Brand | undefined
+      setBrands((prev) =>
+        prev.map((b) => {
+          if (b.id !== id) return b
+          merged = { ...b, ...patch }
+          return merged
+        }),
+      )
+      if (!workerEnabled) return merged
+      try {
+        const updated = await updateWorkerBrand(id, patch)
+        setBrands((prev) => prev.map((b) => (b.id === id ? updated.brand : b)))
+        setWorkerError(null)
+        return updated.brand
+      } catch {
         setWorkerError('Brand update failed on backend.')
-      })
-    }
-  }, [workerEnabled])
+        throw new Error('Brand update failed')
+      }
+    },
+    [workerEnabled],
+  )
 
   const deleteBrand = useCallback((id: string) => {
     setBrands((prev) => prev.filter((b) => b.id !== id))

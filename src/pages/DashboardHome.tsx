@@ -73,6 +73,7 @@ type BrandStat = {
 
 function BrandCard({
   brand,
+  dashboardTag,
   campaignStats,
   themeIndex,
   loadingSubscribers,
@@ -81,6 +82,7 @@ function BrandCard({
   onRefresh,
 }: {
   brand: { id: string; name: string }
+  dashboardTag?: string
   campaignStats: BrandStat | undefined
   themeIndex: number
   loadingSubscribers: boolean
@@ -88,6 +90,11 @@ function BrandCard({
   refreshing: boolean
   onRefresh: (brandId: string) => void
 }) {
+  const tagForLink = (dashboardTag || subscriber?.dashboardTag || '').trim()
+  const campaignHref = tagForLink
+    ? `/campaigns/new?brand=${encodeURIComponent(brand.id)}&tag=${encodeURIComponent(tagForLink)}`
+    : `/campaigns/new?brand=${encodeURIComponent(brand.id)}`
+  const audienceLabel = tagForLink || subscriber?.dashboardTag
   const allContacts = subscriber?.allContacts ?? 0
   const totalSubs = subscriber?.totalSubscribers ?? 0
   const activeSubs = subscriber?.activeSmsSubscribers ?? 0
@@ -109,11 +116,22 @@ function BrandCard({
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
           <Link
-            to={`/campaigns?brand=${encodeURIComponent(brand.id)}`}
+            to={campaignHref}
             className="text-lg font-bold text-slate-900 hover:underline"
+            title={tagForLink ? `New campaign with tag ${tagForLink}` : 'New campaign'}
           >
             {brand.name}
           </Link>
+          {audienceLabel ? (
+            <p className="mt-0.5 text-xs font-medium text-violet-800">
+              Tag: {audienceLabel}
+              {subscriber?.audienceScope === 'tag' ? (
+                <span className="ml-1 font-normal text-slate-500">(tag audience)</span>
+              ) : null}
+            </p>
+          ) : (
+            <p className="mt-0.5 text-xs text-amber-700">No dashboard tag — configure in Brands</p>
+          )}
           {pill ? (
             <span
               title={pill.title}
@@ -132,7 +150,11 @@ function BrandCard({
             size="sm"
             loading={refreshing}
             onClick={() => onRefresh(brand.id)}
-            title="Walk more contacts from ActiveCampaign and update counts"
+            title={
+              tagForLink
+                ? `Recount contacts with tag "${tagForLink}" from ActiveCampaign`
+                : 'Walk more contacts from ActiveCampaign and update counts'
+            }
             aria-label={`Recount subscribers for ${brand.name}`}
           >
             {!refreshing ? <RefreshCw className="h-3.5 w-3.5" aria-hidden /> : null}
@@ -596,10 +618,10 @@ export function DashboardHome() {
         ) : (
           <>
             <div className="mb-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-              <span className="font-semibold text-slate-700">All Contacts</span> = total contacts in
-              ActiveCampaign{' · '}
+              <span className="font-semibold text-slate-700">All Contacts</span> = contacts on the
+              brand&apos;s dashboard tag (or whole account if no tag){' · '}
               <span className="font-semibold text-slate-700">Total Subscribers</span> = SMS-capable
-              audience{' · '}
+              on that audience{' · '}
               <span className="font-semibold text-slate-700">Active</span> = can still receive
               messages{' · '}
               <span className="font-semibold text-slate-700">Growth</span> = today vs yesterday
@@ -617,10 +639,13 @@ export function DashboardHome() {
                   : 'grid gap-2 sm:grid-cols-2'
               }
             >
-              {visibleBrands.map((b, idx) => (
+              {visibleBrands.map((b, idx) => {
+                const brandRow = brands.find((br) => br.id === b.id)
+                return (
                 <BrandCard
                   key={b.id}
                   brand={{ id: b.id, name: b.name }}
+                  dashboardTag={brandRow?.dashboardTag}
                   campaignStats={campaignStatsByBrand.get(b.id)}
                   themeIndex={idx}
                   loadingSubscribers={loadingSubscriberSummary}
@@ -628,7 +653,7 @@ export function DashboardHome() {
                   refreshing={refreshingBrandIds.has(b.id)}
                   onRefresh={handleRecount}
                 />
-              ))}
+              )})}
             </div>
           </>
         )}

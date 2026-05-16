@@ -28,6 +28,8 @@ export type Brand = {
   messagingServiceSid: string;
   activeCampaignApiUrl: string;
   activeCampaignApiKey: string;
+  /** ActiveCampaign tag name used for dashboard audience + default campaign tag. */
+  dashboardTag?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -130,6 +132,8 @@ export type BrandSubscriberCache = {
   fetchError: string;
   status: "fresh" | "partial" | "stale";
   updatedAt: string;
+  dashboardTag?: string;
+  audienceScope?: "tag" | "account";
 };
 
 export type BrandSubscriberCursor = {

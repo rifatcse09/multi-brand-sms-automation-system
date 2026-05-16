@@ -16,6 +16,10 @@ export const key = {
     `analytics:subs:${yyyyMmDd}:brand:${brandId}`,
   brandSubsCache: (brandId: string) => `analytics:brand:${brandId}:subs`,
   brandSubsCursor: (brandId: string) => `analytics:brand:${brandId}:subs:cursor`,
+  brandSubsTagCache: (brandId: string, tagSlug: string) =>
+    `analytics:brand:${brandId}:subs:tag:${tagSlug}`,
+  brandSubsTagCursor: (brandId: string, tagSlug: string) =>
+    `analytics:brand:${brandId}:subs:tag:${tagSlug}:cursor`,
   brandTagsCache: (brandId: string) => `brand:${brandId}:tags:cache`,
   authUser: (email: string) => `auth:user:${email.toLowerCase()}`,
   authSession: (token: string) => `auth:session:${token}`,

@@ -99,13 +99,12 @@ export async function acFetchJson(
   return payload;
 }
 
-export async function fetchPhonesFromActiveCampaign(
+export async function resolveActiveCampaignTagId(
   brand: Brand,
   tagName: string,
-  maxCount: number,
-): Promise<string[]> {
-  if (!brand.activeCampaignApiUrl || !brand.activeCampaignApiKey) return [];
-  if (!tagName) return [];
+): Promise<string | null> {
+  if (!brand.activeCampaignApiUrl || !brand.activeCampaignApiKey) return null;
+  if (!tagName.trim()) return null;
 
   const tagResp = await acFetchJson(
     brand,
@@ -116,7 +115,60 @@ export async function fetchPhonesFromActiveCampaign(
     (t) => (t.tag || "").trim().toLowerCase() === tagName.trim().toLowerCase(),
   );
   const tag = exact ?? (tags.length === 1 ? tags[0] : undefined);
-  if (!tag?.id) return [];
+  return tag?.id ? String(tag.id) : null;
+}
+
+export async function getActiveCampaignTagContactTotal(
+  brand: Brand,
+  tagId: string,
+): Promise<number> {
+  const resp = await acFetchJson(
+    brand,
+    `/api/3/contacts?tagid=${encodeURIComponent(tagId)}&limit=1&offset=0`,
+  );
+  const meta = (resp.meta as Record<string, unknown> | undefined) ?? {};
+  const totalRaw = String(meta.total ?? "0");
+  const total = parseInt(totalRaw, 10);
+  return Number.isFinite(total) && total >= 0 ? total : 0;
+}
+
+export async function countSmsContactsPageByTag(
+  brand: Brand,
+  tagId: string,
+  offset: number,
+  pageSize: number,
+): Promise<{ count: number; rows: number }> {
+  const contactsResp = await acFetchJson(
+    brand,
+    `/api/3/contacts?tagid=${encodeURIComponent(tagId)}&limit=${pageSize}&offset=${offset}&include=fieldValues`,
+  );
+  const contacts =
+    (contactsResp.contacts as Array<Record<string, unknown>> | undefined) ?? [];
+  const pageFieldValues =
+    (contactsResp.fieldValues as
+      | Array<{ contact?: string | number; value?: string | number | null }>
+      | undefined) ?? [];
+  const byContact = mapFieldValuesByContact(pageFieldValues);
+
+  let count = 0;
+  for (const contact of contacts) {
+    const phone = phoneFromActiveCampaignContact(contact, byContact);
+    if (phone) count += 1;
+  }
+
+  return { count, rows: contacts.length };
+}
+
+export async function fetchPhonesFromActiveCampaign(
+  brand: Brand,
+  tagName: string,
+  maxCount: number,
+): Promise<string[]> {
+  if (!brand.activeCampaignApiUrl || !brand.activeCampaignApiKey) return [];
+  if (!tagName) return [];
+
+  const tagId = await resolveActiveCampaignTagId(brand, tagName);
+  if (!tagId) return [];
 
   const result: string[] = [];
   let offset = 0;
@@ -124,7 +176,7 @@ export async function fetchPhonesFromActiveCampaign(
   while (result.length < maxCount) {
     const contactsResp = await acFetchJson(
       brand,
-      `/api/3/contacts?tagid=${encodeURIComponent(tag.id)}&limit=${pageSize}&offset=${offset}&include=fieldValues`,
+      `/api/3/contacts?tagid=${encodeURIComponent(tagId)}&limit=${pageSize}&offset=${offset}&include=fieldValues`,
     );
     const contacts =
       (contactsResp.contacts as Array<Record<string, unknown>> | undefined) ?? [];

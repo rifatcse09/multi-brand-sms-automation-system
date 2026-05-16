@@ -21,6 +21,8 @@ export type WorkerSubscriberBrand = {
   walkedOffset: number
   walkedTotal: number
   walkDone: boolean
+  dashboardTag?: string
+  audienceScope?: 'tag' | 'account'
 }
 
 export type WorkerSubscriberSummary = {
@@ -375,6 +377,9 @@ function mapSubscriberBrand(x: Record<string, unknown>): WorkerSubscriberBrand {
     walkedOffset: asNumber(x.walkedOffset, 0),
     walkedTotal: asNumber(x.walkedTotal, allContacts),
     walkDone: Boolean(x.walkDone),
+    dashboardTag: asString(x.dashboardTag) || undefined,
+    audienceScope:
+      x.audienceScope === 'tag' || x.audienceScope === 'account' ? x.audienceScope : undefined,
   }
 }
 

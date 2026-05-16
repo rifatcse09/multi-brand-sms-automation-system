@@ -1,11 +1,12 @@
 import { useMemo, useState } from 'react'
-import { Pencil, Plus, Trash2, Building2 } from 'lucide-react'
+import { Pencil, Plus, Tag, Trash2, Building2 } from 'lucide-react'
 import { Card, CardHeader } from '../components/ui/Card'
 import { Button } from '../components/ui/Button'
 import { Modal } from '../components/ui/Modal'
 import { Label } from '../components/ui/Label'
 import { Input } from '../components/ui/Input'
 import { EmptyState } from '../components/ui/EmptyState'
+import { DashboardTagModal } from '../components/brands/DashboardTagModal'
 import { useAppData } from '../context/AppDataContext'
 import type { Brand } from '../types'
 
@@ -17,6 +18,18 @@ const emptyBrand: Omit<Brand, 'id'> = {
   messagingServiceSid: '',
   activeCampaignApiUrl: '',
   activeCampaignApiKey: '',
+  dashboardTag: '',
+}
+
+type TagModalState = {
+  brandId: string
+  brandName: string
+  initialTag?: string
+  acCredentialsChanged?: boolean
+}
+
+function acConfigured(form: Omit<Brand, 'id'>) {
+  return Boolean(form.activeCampaignApiUrl.trim() && form.activeCampaignApiKey.trim())
 }
 
 export function BrandsPage() {
@@ -26,6 +39,8 @@ export function BrandsPage() {
   const [editing, setEditing] = useState<Brand | null>(null)
   const [form, setForm] = useState<Omit<Brand, 'id'>>(emptyBrand)
   const [formError, setFormError] = useState<string | null>(null)
+  const [savingBrand, setSavingBrand] = useState(false)
+  const [tagModal, setTagModal] = useState<TagModalState | null>(null)
 
   const title = useMemo(() => (editing ? 'Edit brand' : 'Add brand'), [editing])
 
@@ -41,7 +56,7 @@ export function BrandsPage() {
     setFormError(null)
     const { id: _id, ...rest } = b
     void _id
-    setForm(rest)
+    setForm({ ...emptyBrand, ...rest, dashboardTag: rest.dashboardTag ?? '' })
     setModalOpen(true)
   }
 
@@ -52,7 +67,31 @@ export function BrandsPage() {
     setFormError(null)
   }
 
-  const save = () => {
+  const shouldPromptForTag = (
+    saved: Brand,
+    opts: { isNew: boolean; acChanged: boolean },
+  ) => {
+    if (!acConfigured(saved)) return false
+    if (!workerLinked) return false
+    if (opts.isNew) return true
+    if (opts.acChanged) return true
+    if (!saved.dashboardTag?.trim()) return true
+    return false
+  }
+
+  const openTagModalForBrand = (
+    brand: Brand,
+    opts?: { acCredentialsChanged?: boolean },
+  ) => {
+    setTagModal({
+      brandId: brand.id,
+      brandName: brand.name,
+      initialTag: brand.dashboardTag ?? '',
+      acCredentialsChanged: opts?.acCredentialsChanged,
+    })
+  }
+
+  const save = async () => {
     const errs: string[] = []
     if (!form.name.trim()) errs.push('Brand name is required.')
     if (!form.activeCampaignApiUrl.trim()) errs.push('ActiveCampaign API URL is required.')
@@ -62,12 +101,45 @@ export function BrandsPage() {
       return
     }
     setFormError(null)
-    if (editing) {
-      updateBrand(editing.id, form)
-    } else {
-      addBrand(form)
+    setSavingBrand(true)
+
+    const acChanged =
+      Boolean(editing) &&
+      (form.activeCampaignApiUrl.trim() !== editing!.activeCampaignApiUrl.trim() ||
+        form.activeCampaignApiKey.trim() !== editing!.activeCampaignApiKey.trim())
+
+    const payload: Omit<Brand, 'id'> = {
+      ...form,
+      dashboardTag: editing?.dashboardTag ?? form.dashboardTag?.trim() ?? '',
     }
-    closeModal()
+
+    try {
+      let saved: Brand
+      if (editing) {
+        const updated = await updateBrand(editing.id, payload)
+        saved = updated ?? { ...editing, ...payload }
+      } else {
+        saved = await addBrand(payload)
+      }
+      closeModal()
+      if (
+        shouldPromptForTag(saved, {
+          isNew: !editing,
+          acChanged,
+        })
+      ) {
+        openTagModalForBrand(saved, { acCredentialsChanged: acChanged })
+      }
+    } catch {
+      setFormError('Could not save brand. Check your connection and try again.')
+    } finally {
+      setSavingBrand(false)
+    }
+  }
+
+  const saveDashboardTag = async (tag: string) => {
+    if (!tagModal) return
+    await updateBrand(tagModal.brandId, { dashboardTag: tag })
   }
 
   return (
@@ -75,7 +147,7 @@ export function BrandsPage() {
       <Card padding="md">
         <CardHeader
           title="Brands"
-          description="Connect Twilio and ActiveCampaign per brand."
+          description="Connect Twilio and ActiveCampaign per brand, then choose a dashboard audience tag."
           action={
             <Button onClick={openCreate}>
               <Plus className="h-4 w-4" aria-hidden />
@@ -122,6 +194,19 @@ export function BrandsPage() {
               </div>
               <dl className="mt-4 grid gap-3 text-sm">
                 <div>
+                  <dt className="text-xs font-medium text-slate-500">Dashboard audience tag</dt>
+                  <dd className="mt-0.5 text-slate-800">
+                    {b.dashboardTag?.trim() ? (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-violet-100 px-2 py-0.5 text-xs font-medium text-violet-800">
+                        <Tag className="h-3 w-3" aria-hidden />
+                        {b.dashboardTag}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-amber-700">Not configured</span>
+                    )}
+                  </dd>
+                </div>
+                <div>
                   <dt className="text-xs font-medium text-slate-500">Messaging Service SID</dt>
                   <dd className="mt-0.5 font-mono text-xs text-slate-700">{b.messagingServiceSid}</dd>
                 </div>
@@ -130,6 +215,17 @@ export function BrandsPage() {
                   <dd className="mt-0.5 truncate text-slate-700">{b.activeCampaignApiUrl}</dd>
                 </div>
               </dl>
+              {acConfigured(b) && workerLinked ? (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  className="mt-4 w-full"
+                  onClick={() => openTagModalForBrand(b)}
+                >
+                  <Tag className="h-3.5 w-3.5" aria-hidden />
+                  Configure audience tag
+                </Button>
+              ) : null}
             </Card>
           ))}
         </div>
@@ -139,14 +235,16 @@ export function BrandsPage() {
         open={modalOpen}
         onClose={closeModal}
         title={title}
-        description="Fields marked with * are required. Twilio fields are optional if sends use Worker-level credentials."
+        description="Fields marked with * are required. After saving, you can pick the ActiveCampaign tag for dashboard metrics."
         size="lg"
         footer={
           <>
-            <Button variant="secondary" onClick={closeModal}>
+            <Button variant="secondary" onClick={closeModal} disabled={savingBrand}>
               Cancel
             </Button>
-            <Button onClick={save}>Save brand</Button>
+            <Button onClick={() => void save()} loading={savingBrand}>
+              Save brand
+            </Button>
           </>
         }
       >
@@ -224,9 +322,23 @@ export function BrandsPage() {
               value={form.activeCampaignApiKey}
               onChange={(e) => setForm((f) => ({ ...f, activeCampaignApiKey: e.target.value }))}
             />
+            <p className="mt-1.5 text-xs text-slate-500">
+              You will choose the dashboard audience tag in the next step after saving.
+            </p>
           </div>
         </div>
       </Modal>
+
+      <DashboardTagModal
+        open={Boolean(tagModal)}
+        brandId={tagModal?.brandId ?? ''}
+        brandName={tagModal?.brandName ?? ''}
+        initialTag={tagModal?.initialTag}
+        acCredentialsChanged={tagModal?.acCredentialsChanged}
+        workerLinked={workerLinked}
+        onClose={() => setTagModal(null)}
+        onSave={saveDashboardTag}
+      />
 
       <Modal
         open={Boolean(deleteId)}

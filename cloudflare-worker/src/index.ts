@@ -1,9 +1,12 @@
 import {
   countSmsContactsPage,
+  countSmsContactsPageByTag,
   fetchActiveCampaignTags,
   fetchPhonesFromActiveCampaign,
   getActiveCampaignContactTotal,
+  getActiveCampaignTagContactTotal,
   normalizePhone,
+  resolveActiveCampaignTagId,
 } from "./activecampaign";
 import { appendUnique, defaultMeta, key, kvGetJSON, kvPutJSON } from "./kv";
 import type {
@@ -82,19 +85,38 @@ async function getBrandUnsubscribedTotal(env: Env, brandId: string): Promise<num
   return metas.reduce((sum, m) => sum + (m.unsubs || 0), 0);
 }
 
+function tagKeySlug(tagName: string): string {
+  const slug = tagName.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 80);
+  return slug || "tag";
+}
+
+function brandSubscriberKeys(brand: Brand): { cacheKey: string; cursorKey: string } {
+  const dashboardTag = (brand.dashboardTag || "").trim();
+  if (dashboardTag) {
+    const slug = tagKeySlug(dashboardTag);
+    return {
+      cacheKey: key.brandSubsTagCache(brand.id, slug),
+      cursorKey: key.brandSubsTagCursor(brand.id, slug),
+    };
+  }
+  return {
+    cacheKey: key.brandSubsCache(brand.id),
+    cursorKey: key.brandSubsCursor(brand.id),
+  };
+}
+
+async function invalidateBrandTagSubscriberCache(
+  env: Env,
+  brandId: string,
+  tagName: string,
+) {
+  const slug = tagKeySlug(tagName);
+  await env.SMS_KV.delete(key.brandSubsTagCache(brandId, slug));
+  await env.SMS_KV.delete(key.brandSubsTagCursor(brandId, slug));
+}
+
 // Refreshes one brand cache incrementally to avoid subrequest limits.
-//
-// Cursor strategy (so the dashboard doesn't reset to 0 every time AC's
-// contact count drifts by even 1):
-//   - SMALL drift (e.g. a few contacts created/deleted overnight) -> bump
-//     the cursor's totalContacts and resume the walk from the previous
-//     offset so we only count the new tail.
-//   - LARGE drift (mass import/cleanup) -> full restart from offset 0,
-//     but preserve the last fully-walked `smsContacts` as
-//     `lastFreshSmsContacts` so the UI keeps showing yesterday's number
-//     while the new walk catches up.
-//   - Once a walk reaches `done: true`, atomically promote
-//     cursor.smsContacts -> lastFreshSmsContacts (the displayed value).
+// When `dashboardTag` is set, walks only contacts with that AC tag (separate KV cache).
 async function refreshBrandSubscriberCache(
   env: Env,
   brand: Brand,
@@ -102,12 +124,48 @@ async function refreshBrandSubscriberCache(
 ): Promise<BrandSubscriberCache> {
   const nowIso = now();
   const unsubscribedTotal = await getBrandUnsubscribedTotal(env, brand.id);
+  const dashboardTag = (brand.dashboardTag || "").trim();
+  const audienceScope: BrandSubscriberCache["audienceScope"] = dashboardTag ? "tag" : "account";
+  const { cacheKey, cursorKey } = brandSubscriberKeys(brand);
+
+  const baseCache = (): BrandSubscriberCache => ({
+    brandId: brand.id,
+    brandName: brand.name,
+    allContacts: 0,
+    totalSubscribers: 0,
+    activeSmsSubscribers: 0,
+    unsubscribedTotal,
+    fetchOk: false,
+    fetchError: "",
+    status: "stale",
+    updatedAt: nowIso,
+    dashboardTag: dashboardTag || undefined,
+    audienceScope,
+  });
+
   try {
-    const totalContacts = await getActiveCampaignContactTotal(brand);
-    const prevCursor = await kvGetJSON<BrandSubscriberCursor>(
-      env.SMS_KV,
-      key.brandSubsCursor(brand.id),
-    );
+    let totalContacts: number;
+    let walkPage: (offset: number, pageSize: number) => Promise<{ count: number; rows: number }>;
+
+    if (dashboardTag) {
+      const tagId = await resolveActiveCampaignTagId(brand, dashboardTag);
+      if (!tagId) {
+        const cache: BrandSubscriberCache = {
+          ...baseCache(),
+          fetchError: `ActiveCampaign tag not found: "${dashboardTag}"`,
+        };
+        await kvPutJSON(env.SMS_KV, cacheKey, cache);
+        return cache;
+      }
+      totalContacts = await getActiveCampaignTagContactTotal(brand, tagId);
+      walkPage = (offset, pageSize) =>
+        countSmsContactsPageByTag(brand, tagId, offset, pageSize);
+    } else {
+      totalContacts = await getActiveCampaignContactTotal(brand);
+      walkPage = (offset, pageSize) => countSmsContactsPage(brand, offset, pageSize);
+    }
+
+    const prevCursor = await kvGetJSON<BrandSubscriberCursor>(env.SMS_KV, cursorKey);
 
     let cursor: BrandSubscriberCursor =
       prevCursor ?? {
@@ -126,12 +184,9 @@ async function refreshBrandSubscriberCache(
     const inheritedLastFresh = cursor.done
       ? cursor.smsContacts
       : (cursor.lastFreshSmsContacts ?? 0);
-    const inheritedLastFreshAt = cursor.done
-      ? nowIso
-      : cursor.lastFreshAt;
+    const inheritedLastFreshAt = cursor.done ? nowIso : cursor.lastFreshAt;
 
     if (cursor.offset > totalContacts || drift > driftThreshold) {
-      // Big change in AC -> restart, but keep the last verified count for display.
       cursor = {
         totalContacts,
         offset: 0,
@@ -142,7 +197,6 @@ async function refreshBrandSubscriberCache(
         updatedAt: nowIso,
       };
     } else if (drift > 0) {
-      // Small drift -> resume. If we were "done", reopen so the tail gets walked.
       cursor = {
         ...cursor,
         totalContacts,
@@ -156,7 +210,7 @@ async function refreshBrandSubscriberCache(
     const pageSize = 100;
     let pages = 0;
     while (!cursor.done && pages < maxPages) {
-      const page = await countSmsContactsPage(brand, cursor.offset, pageSize);
+      const page = await walkPage(cursor.offset, pageSize);
       if (page.rows === 0) {
         cursor.done = true;
         break;
@@ -170,18 +224,13 @@ async function refreshBrandSubscriberCache(
     }
 
     if (cursor.done) {
-      // Atomic promotion: this walk is verified end-to-end, so it becomes the
-      // new "last fresh" anchor for future partial walks.
       cursor.lastFreshSmsContacts = cursor.smsContacts;
       cursor.lastFreshAt = nowIso;
     }
     cursor.totalContacts = totalContacts;
     cursor.updatedAt = nowIso;
-    await kvPutJSON(env.SMS_KV, key.brandSubsCursor(brand.id), cursor);
+    await kvPutJSON(env.SMS_KV, cursorKey, cursor);
 
-    // What we DISPLAY: when fresh, show the just-completed count. When still
-    // walking, show the last fully-verified count (if we have one) so the
-    // dashboard doesn't visibly drop to a small partial number.
     const displaySmsContacts = cursor.done
       ? cursor.smsContacts
       : cursor.lastFreshSmsContacts && cursor.lastFreshSmsContacts > 0
@@ -199,11 +248,13 @@ async function refreshBrandSubscriberCache(
       fetchError: "",
       status: cursor.done ? "fresh" : "partial",
       updatedAt: nowIso,
+      dashboardTag: dashboardTag || undefined,
+      audienceScope,
     };
-    await kvPutJSON(env.SMS_KV, key.brandSubsCache(brand.id), cache);
+    await kvPutJSON(env.SMS_KV, cacheKey, cache);
     return cache;
   } catch (e) {
-    const prev = await kvGetJSON<BrandSubscriberCache>(env.SMS_KV, key.brandSubsCache(brand.id));
+    const prev = await kvGetJSON<BrandSubscriberCache>(env.SMS_KV, cacheKey);
     const cache: BrandSubscriberCache = {
       brandId: brand.id,
       brandName: brand.name,
@@ -215,8 +266,10 @@ async function refreshBrandSubscriberCache(
       fetchError: e instanceof Error ? e.message : String(e),
       status: "stale",
       updatedAt: nowIso,
+      dashboardTag: dashboardTag || undefined,
+      audienceScope,
     };
-    await kvPutJSON(env.SMS_KV, key.brandSubsCache(brand.id), cache);
+    await kvPutJSON(env.SMS_KV, cacheKey, cache);
     return cache;
   }
 }
@@ -1015,8 +1068,33 @@ export default {
 
       if (request.method === "PUT") {
         const patch = (await request.json()) as Partial<Brand>;
+        const acUrlChanged =
+          patch.activeCampaignApiUrl !== undefined &&
+          patch.activeCampaignApiUrl !== existing.activeCampaignApiUrl;
+        const acKeyChanged =
+          patch.activeCampaignApiKey !== undefined &&
+          patch.activeCampaignApiKey !== existing.activeCampaignApiKey;
+        const prevTag = (existing.dashboardTag || "").trim();
+        const nextTag =
+          patch.dashboardTag !== undefined
+            ? String(patch.dashboardTag || "").trim()
+            : prevTag;
+        const tagChanged = patch.dashboardTag !== undefined && nextTag !== prevTag;
+
         const updated: Brand = { ...existing, ...patch, id: brandId, updatedAt: now() };
         await kvPutJSON(env.SMS_KV, key.brand(brandId), updated);
+
+        if (acUrlChanged || acKeyChanged) {
+          await env.SMS_KV.delete(key.brandTagsCache(brandId));
+        }
+        if (tagChanged) {
+          if (prevTag) await invalidateBrandTagSubscriberCache(env, brandId, prevTag);
+          if (nextTag) await invalidateBrandTagSubscriberCache(env, brandId, nextTag);
+        }
+        if (tagChanged || acUrlChanged || acKeyChanged) {
+          void refreshBrandSubscriberCache(env, updated, 3).catch(() => undefined);
+        }
+
         return json({ ok: true, brand: updated });
       }
 
@@ -1273,11 +1351,10 @@ export default {
       const byBrand = (
         await Promise.all(
           configuredBrands.map(async (b) => {
-            const cached = await kvGetJSON<BrandSubscriberCache>(
-              env.SMS_KV,
-              key.brandSubsCache(b.id),
-            );
+            const { cacheKey } = brandSubscriberKeys(b);
+            const cached = await kvGetJSON<BrandSubscriberCache>(env.SMS_KV, cacheKey);
             if (cached) return cached;
+            const dashboardTag = (b.dashboardTag || "").trim();
             return {
               brandId: b.id,
               brandName: b.name,
@@ -1289,9 +1366,13 @@ export default {
               yesterdayActive: 0,
               growth: 0,
               fetchOk: false,
-              fetchError: "No cache yet. Run refresh endpoint or wait for cron.",
+              fetchError: dashboardTag
+                ? "No tag audience cache yet. Configure tag or run Recount."
+                : "No cache yet. Run refresh endpoint or wait for cron.",
               status: "stale",
               updatedAt: now(),
+              dashboardTag: dashboardTag || undefined,
+              audienceScope: dashboardTag ? "tag" : "account",
             } as BrandSubscriberCache & {
               todayActive: number;
               yesterdayActive: number;
@@ -1336,10 +1417,11 @@ export default {
             )) ?? { delivered: 0, unsubs: 0 };
           const todayBrandActive = Math.max(0, todayBrand.delivered - todayBrand.unsubs);
           const yesterdayBrandActive = Math.max(0, yesterdayBrand.delivered - yesterdayBrand.unsubs);
-          const cursor = await kvGetJSON<BrandSubscriberCursor>(
-            env.SMS_KV,
-            key.brandSubsCursor(b.brandId),
-          );
+          const brandRow = configuredBrands.find((x) => x.id === b.brandId);
+          const { cursorKey } = brandRow
+            ? brandSubscriberKeys(brandRow)
+            : { cursorKey: key.brandSubsCursor(b.brandId) };
+          const cursor = await kvGetJSON<BrandSubscriberCursor>(env.SMS_KV, cursorKey);
           return {
             ...b,
             todayActive: todayBrandActive,
