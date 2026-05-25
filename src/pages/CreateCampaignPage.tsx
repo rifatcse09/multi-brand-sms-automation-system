@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Card, CardHeader } from '../components/ui/Card'
 import { Label } from '../components/ui/Label'
@@ -7,11 +7,21 @@ import { Textarea } from '../components/ui/Textarea'
 import { Select } from '../components/ui/Select'
 import { Button } from '../components/ui/Button'
 import { useAppData } from '../context/AppDataContext'
-import { fetchWorkerBrandTags, type WorkerBrandTag } from '../services/smsWorkerApi'
+import { fetchWorkerBrandTags, fetchWorkerBrandTagSubscribers, warmupWorkerBrandTagSubscribers, type WorkerBrandTag, type WorkerSubscriberBrand } from '../services/smsWorkerApi'
 import { TagPicker } from '../components/brands/TagPicker'
 
+function tagsMatch(a: string, b: string) {
+  return a.trim().toLowerCase() === b.trim().toLowerCase()
+}
+
 export function CreateCampaignPage() {
-  const { brands, addCampaign, workerLinked } = useAppData()
+  const {
+    brands,
+    addCampaign,
+    workerLinked,
+    getBrandSubscriber,
+    loadingSubscriberSummary,
+  } = useAppData()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const urlBrandId = searchParams.get('brand')?.trim() ?? ''
@@ -23,11 +33,14 @@ export function CreateCampaignPage() {
   const [formError, setFormError] = useState<string | null>(null)
   const [tags, setTags] = useState<WorkerBrandTag[]>([])
   const [loadingTags, setLoadingTags] = useState(false)
+  const [tagAudience, setTagAudience] = useState<WorkerSubscriberBrand | null>(null)
+  const [loadingTagAudience, setLoadingTagAudience] = useState(false)
   const [scheduleLater, setScheduleLater] = useState(false)
   const [scheduleTimezone, setScheduleTimezone] = useState(
     Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
   )
   const [scheduleAtLocal, setScheduleAtLocal] = useState('')
+  const tagInitializedForBrand = useRef<string | null>(null)
 
   const timezoneOptions = useMemo(() => {
     const primary = [
@@ -95,7 +108,11 @@ export function CreateCampaignPage() {
   }, [brandId, urlBrandId, brands])
 
   useEffect(() => {
-    if (!resolvedBrandId || !workerLinked) return
+    if (!resolvedBrandId || !workerLinked) {
+      setTags([])
+      return
+    }
+    void warmupWorkerBrandTagSubscribers(resolvedBrandId).catch(() => undefined)
     let cancelled = false
     setLoadingTags(true)
     setFormError(null)
@@ -104,17 +121,9 @@ export function CreateCampaignPage() {
         const next = await fetchWorkerBrandTags(resolvedBrandId)
         if (cancelled) return
         setTags(next)
-        const brandDefault = brands.find((b) => b.id === resolvedBrandId)?.dashboardTag?.trim()
-        const prefer = urlTag || brandDefault || ''
-        if (prefer && next.some((t) => t.tag === prefer)) {
-          setTag(prefer)
-        } else {
-          setTag((prev) => (prev && next.some((t) => t.tag === prev) ? prev : ''))
-        }
       } catch (e) {
         if (cancelled) return
         setTags([])
-        setTag('')
         const msg = e instanceof Error ? e.message : 'Failed to load ActiveCampaign tags.'
         setFormError(msg)
       } finally {
@@ -124,12 +133,92 @@ export function CreateCampaignPage() {
     return () => {
       cancelled = true
     }
-  }, [resolvedBrandId, workerLinked, brands, urlTag])
+  }, [resolvedBrandId, workerLinked])
+
+  useEffect(() => {
+    if (!resolvedBrandId || !workerLinked || tags.length === 0) return
+    if (tagInitializedForBrand.current === resolvedBrandId) return
+
+    const brandRow = brands.find((b) => b.id === resolvedBrandId)
+    const brandDefault = brandRow?.dashboardTag?.trim()
+    const fromUrl =
+      urlBrandId === resolvedBrandId &&
+      urlTag &&
+      tags.some((t) => tagsMatch(t.tag, urlTag))
+        ? urlTag
+        : ''
+    if (!brandRow && !fromUrl) return
+
+    tagInitializedForBrand.current = resolvedBrandId
+    const prefer = fromUrl || brandDefault || ''
+    if (prefer && tags.some((t) => tagsMatch(t.tag, prefer))) {
+      setTag(prefer)
+    } else {
+      setTag('')
+    }
+  }, [resolvedBrandId, workerLinked, brands, tags, urlBrandId, urlTag])
+
+  const tagTrim = tag.trim()
+  const brandRow = useMemo(
+    () => brands.find((b) => b.id === resolvedBrandId),
+    [brands, resolvedBrandId],
+  )
+  const dashboardTag = brandRow?.dashboardTag?.trim() ?? ''
+  const dashboardAudience = resolvedBrandId ? getBrandSubscriber(resolvedBrandId) : undefined
+  const matchesDashboardCache = useMemo(() => {
+    if (!tagTrim) return false
+    if (dashboardTag && tagsMatch(tagTrim, dashboardTag)) return true
+    if (dashboardAudience?.dashboardTag && tagsMatch(tagTrim, dashboardAudience.dashboardTag)) {
+      return true
+    }
+    if (urlTag && tagsMatch(tagTrim, urlTag) && urlBrandId === resolvedBrandId) return true
+    return false
+  }, [tagTrim, dashboardTag, dashboardAudience, urlTag, urlBrandId, resolvedBrandId])
+
+  useEffect(() => {
+    if (!resolvedBrandId || !tagTrim || !workerLinked) {
+      setTagAudience(null)
+      setLoadingTagAudience(false)
+      return
+    }
+    let cancelled = false
+    setLoadingTagAudience(true)
+    void (async () => {
+      try {
+        const next = await fetchWorkerBrandTagSubscribers(resolvedBrandId, tagTrim)
+        if (cancelled) return
+        setTagAudience(next)
+      } catch {
+        if (cancelled) return
+        setTagAudience(null)
+      } finally {
+        if (!cancelled) setLoadingTagAudience(false)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [resolvedBrandId, tagTrim, workerLinked])
+
+  const resolvedTagAudience = useMemo(() => {
+    if (matchesDashboardCache && dashboardAudience) return dashboardAudience
+    return tagAudience
+  }, [tagAudience, matchesDashboardCache, dashboardAudience])
+
+  const showingTagAudience =
+    Boolean(tagTrim) &&
+    !resolvedTagAudience &&
+    (loadingTagAudience || (matchesDashboardCache && loadingSubscriberSummary))
+  const tagAudienceWalkPct = useMemo(() => {
+    if (!resolvedTagAudience) return 0
+    const total = resolvedTagAudience.walkedTotal ?? resolvedTagAudience.allContacts ?? 0
+    const offset = resolvedTagAudience.walkedOffset ?? 0
+    return total > 0 ? Math.min(100, Math.round((offset / total) * 100)) : 0
+  }, [resolvedTagAudience])
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
     setFormError(null)
-    const tagTrim = tag.trim()
     const messageTrim = message.trim()
     if (!resolvedBrandId) {
       setFormError('Choose a brand.')
@@ -213,6 +302,7 @@ export function CreateCampaignPage() {
                 onChange={(e) => {
                   const nextId = e.target.value
                   setBrandId(nextId)
+                  tagInitializedForBrand.current = null
                   const defaultTag = brands.find((b) => b.id === nextId)?.dashboardTag?.trim()
                   setTag(defaultTag || '')
                 }}
@@ -237,7 +327,51 @@ export function CreateCampaignPage() {
               disabled={!resolvedBrandId}
               placeholder={!resolvedBrandId ? 'Select a brand first' : undefined}
               helperText="Pre-filled from the dashboard when you open this page from a brand card."
+              tagAudienceCount={resolvedTagAudience?.totalSubscribers}
             />
+            {tagTrim && workerLinked ? (
+              <div className="rounded-lg border border-violet-200 bg-violet-50/80 px-3 py-2.5">
+                <p className="text-xs font-semibold uppercase tracking-wider text-violet-900">
+                  Tag audience
+                </p>
+                {showingTagAudience ? (
+                  <p className="mt-1 text-sm text-slate-600">Loading subscriber count…</p>
+                ) : resolvedTagAudience ? (
+                  <div className="mt-1 space-y-1">
+                    <p className="text-sm text-slate-800">
+                      <span className="font-semibold text-slate-900">
+                        {resolvedTagAudience.totalSubscribers.toLocaleString()}
+                      </span>{' '}
+                      total subscribers
+                      {resolvedTagAudience.allContacts > 0 ? (
+                        <span className="text-slate-500">
+                          {' '}
+                          · {resolvedTagAudience.allContacts.toLocaleString()} contacts on tag
+                        </span>
+                      ) : null}
+                    </p>
+                    <p className="text-xs text-slate-600">
+                      Campaign will send to all SMS-capable contacts with this tag.
+                      {matchesDashboardCache ? ' Using dashboard cache.' : ' Loaded from tag cache.'}
+                    </p>
+                    {!resolvedTagAudience.walkDone ? (
+                      <p className="text-xs font-medium text-amber-700">
+                        Still counting ({tagAudienceWalkPct}%) — total may increase until sync
+                        finishes.
+                      </p>
+                    ) : null}
+                    {resolvedTagAudience.fetchError ? (
+                      <p className="text-xs text-red-700">{resolvedTagAudience.fetchError}</p>
+                    ) : null}
+                  </div>
+                ) : (
+                  <p className="mt-1 text-sm text-slate-600">
+                    No cached subscriber count for this tag yet. Wait for cron or use Recount on the
+                    dashboard.
+                  </p>
+                )}
+              </div>
+            ) : null}
             <div>
               <Label htmlFor="message" required>
                 Message

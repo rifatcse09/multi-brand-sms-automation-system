@@ -21,6 +21,8 @@ export const key = {
   brandSubsTagCursor: (brandId: string, tagSlug: string) =>
     `analytics:brand:${brandId}:subs:tag:${tagSlug}:cursor`,
   brandTagsCache: (brandId: string) => `brand:${brandId}:tags:cache`,
+  brandTagRefreshCursor: (brandId: string) =>
+    `analytics:brand:${brandId}:subs:tags:refresh:cursor`,
   authUser: (email: string) => `auth:user:${email.toLowerCase()}`,
   authSession: (token: string) => `auth:session:${token}`,
   authReset: (email: string) => `auth:reset:${email.toLowerCase()}`,

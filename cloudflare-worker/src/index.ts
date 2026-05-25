@@ -2,6 +2,7 @@ import {
   countSmsContactsPage,
   countSmsContactsPageByTag,
   fetchActiveCampaignTags,
+  fetchPhonePageFromActiveCampaignByTag,
   fetchPhonesFromActiveCampaign,
   getActiveCampaignContactTotal,
   getActiveCampaignTagContactTotal,
@@ -90,10 +91,17 @@ function tagKeySlug(tagName: string): string {
   return slug || "tag";
 }
 
-function brandSubscriberKeys(brand: Brand): { cacheKey: string; cursorKey: string } {
-  const dashboardTag = (brand.dashboardTag || "").trim();
-  if (dashboardTag) {
-    const slug = tagKeySlug(dashboardTag);
+function tagsMatch(a: string, b: string): boolean {
+  return a.trim().toLowerCase() === b.trim().toLowerCase();
+}
+
+function brandSubscriberKeys(
+  brand: Brand,
+  tagOverride?: string,
+): { cacheKey: string; cursorKey: string } {
+  const tagName = (tagOverride ?? brand.dashboardTag ?? "").trim();
+  if (tagName) {
+    const slug = tagKeySlug(tagName);
     return {
       cacheKey: key.brandSubsTagCache(brand.id, slug),
       cursorKey: key.brandSubsTagCursor(brand.id, slug),
@@ -115,18 +123,121 @@ async function invalidateBrandTagSubscriberCache(
   await env.SMS_KV.delete(key.brandSubsTagCursor(brandId, slug));
 }
 
+type BrandTagRefreshCursor = { tagIndex: number; updatedAt: string };
+
+async function getBrandAcTags(
+  env: Env,
+  brand: Brand,
+): Promise<Array<{ id: string; tag: string }>> {
+  if (!brand.activeCampaignApiUrl || !brand.activeCampaignApiKey) return [];
+  const cached = await kvGetJSON<{
+    fetchedAt: number;
+    tags: Array<{ id: string; tag: string }>;
+  }>(env.SMS_KV, key.brandTagsCache(brand.id));
+  if (cached?.tags?.length) return cached.tags;
+  const tags = await fetchActiveCampaignTags(brand);
+  await kvPutJSON(env.SMS_KV, key.brandTagsCache(brand.id), {
+    fetchedAt: Date.now(),
+    tags,
+  });
+  return tags;
+}
+
+async function readTagSubscriberCount(
+  env: Env,
+  brandId: string,
+  tagName: string,
+): Promise<{ totalSubscribers: number; status: BrandSubscriberCache["status"] } | null> {
+  const slug = tagKeySlug(tagName);
+  const cache = await kvGetJSON<BrandSubscriberCache>(
+    env.SMS_KV,
+    key.brandSubsTagCache(brandId, slug),
+  );
+  if (!cache) return null;
+  return { totalSubscribers: cache.totalSubscribers, status: cache.status };
+}
+
+/** Seed/increment subscriber cache for many tags without blocking HTTP responses. */
+async function warmBrandTagSubscriberCaches(
+  env: Env,
+  brand: Brand,
+  opts: { maxTags?: number; maxPages?: number; resetCursor?: boolean } = {},
+) {
+  if (!brand.activeCampaignApiUrl || !brand.activeCampaignApiKey) {
+    return { tagCount: 0, warmed: 0 };
+  }
+  const maxTags = Math.max(1, Math.min(opts.maxTags ?? 5, 30));
+  const maxPages = Math.max(1, Math.min(opts.maxPages ?? 1, 5));
+  const tags = await getBrandAcTags(env, brand);
+  if (tags.length === 0) return { tagCount: 0, warmed: 0 };
+
+  if (opts.resetCursor !== false) {
+    await kvPutJSON(env.SMS_KV, key.brandTagRefreshCursor(brand.id), {
+      tagIndex: 0,
+      updatedAt: now(),
+    });
+  }
+
+  let warmed = 0;
+  const seen = new Set<string>();
+  const dashboardTag = (brand.dashboardTag || "").trim();
+
+  if (dashboardTag) {
+    await refreshBrandSubscriberCache(env, brand, maxPages, dashboardTag);
+    seen.add(tagKeySlug(dashboardTag));
+    warmed += 1;
+  }
+
+  for (const row of tags) {
+    if (warmed >= maxTags) break;
+    const tagName = row.tag.trim();
+    if (!tagName) continue;
+    const slug = tagKeySlug(tagName);
+    if (seen.has(slug)) continue;
+    seen.add(slug);
+    await refreshBrandSubscriberCache(env, brand, maxPages, tagName);
+    warmed += 1;
+  }
+
+  return { tagCount: tags.length, warmed };
+}
+
+/** Cron helper: advance one tag per tick with minimal AC load (1 page). */
+async function refreshNextBrandTagInCron(env: Env, brand: Brand, maxPages = 1) {
+  const tags = await getBrandAcTags(env, brand);
+  if (tags.length === 0) return;
+
+  const cursor =
+    (await kvGetJSON<BrandTagRefreshCursor>(
+      env.SMS_KV,
+      key.brandTagRefreshCursor(brand.id),
+    )) ?? { tagIndex: 0, updatedAt: now() };
+
+  const idx = ((cursor.tagIndex % tags.length) + tags.length) % tags.length;
+  const tagName = tags[idx]?.tag?.trim();
+  if (tagName) {
+    await refreshBrandSubscriberCache(env, brand, maxPages, tagName);
+  }
+
+  await kvPutJSON(env.SMS_KV, key.brandTagRefreshCursor(brand.id), {
+    tagIndex: cursor.tagIndex + 1,
+    updatedAt: now(),
+  });
+}
+
 // Refreshes one brand cache incrementally to avoid subrequest limits.
 // When `dashboardTag` is set, walks only contacts with that AC tag (separate KV cache).
 async function refreshBrandSubscriberCache(
   env: Env,
   brand: Brand,
   maxPages = 2,
+  tagOverride?: string,
 ): Promise<BrandSubscriberCache> {
   const nowIso = now();
   const unsubscribedTotal = await getBrandUnsubscribedTotal(env, brand.id);
-  const dashboardTag = (brand.dashboardTag || "").trim();
-  const audienceScope: BrandSubscriberCache["audienceScope"] = dashboardTag ? "tag" : "account";
-  const { cacheKey, cursorKey } = brandSubscriberKeys(brand);
+  const audienceTag = (tagOverride ?? brand.dashboardTag ?? "").trim();
+  const audienceScope: BrandSubscriberCache["audienceScope"] = audienceTag ? "tag" : "account";
+  const { cacheKey, cursorKey } = brandSubscriberKeys(brand, audienceTag || undefined);
 
   const baseCache = (): BrandSubscriberCache => ({
     brandId: brand.id,
@@ -139,7 +250,7 @@ async function refreshBrandSubscriberCache(
     fetchError: "",
     status: "stale",
     updatedAt: nowIso,
-    dashboardTag: dashboardTag || undefined,
+    dashboardTag: audienceTag || undefined,
     audienceScope,
   });
 
@@ -147,12 +258,12 @@ async function refreshBrandSubscriberCache(
     let totalContacts: number;
     let walkPage: (offset: number, pageSize: number) => Promise<{ count: number; rows: number }>;
 
-    if (dashboardTag) {
-      const tagId = await resolveActiveCampaignTagId(brand, dashboardTag);
+    if (audienceTag) {
+      const tagId = await resolveActiveCampaignTagId(brand, audienceTag);
       if (!tagId) {
         const cache: BrandSubscriberCache = {
           ...baseCache(),
-          fetchError: `ActiveCampaign tag not found: "${dashboardTag}"`,
+          fetchError: `ActiveCampaign tag not found: "${audienceTag}"`,
         };
         await kvPutJSON(env.SMS_KV, cacheKey, cache);
         return cache;
@@ -248,7 +359,7 @@ async function refreshBrandSubscriberCache(
       fetchError: "",
       status: cursor.done ? "fresh" : "partial",
       updatedAt: nowIso,
-      dashboardTag: dashboardTag || undefined,
+      dashboardTag: audienceTag || undefined,
       audienceScope,
     };
     await kvPutJSON(env.SMS_KV, cacheKey, cache);
@@ -266,7 +377,7 @@ async function refreshBrandSubscriberCache(
       fetchError: e instanceof Error ? e.message : String(e),
       status: "stale",
       updatedAt: nowIso,
-      dashboardTag: dashboardTag || undefined,
+      dashboardTag: audienceTag || undefined,
       audienceScope,
     };
     await kvPutJSON(env.SMS_KV, cacheKey, cache);
@@ -363,10 +474,180 @@ function makeMockPhones(total: number): PhoneResult[] {
   }));
 }
 
-function calcStatus(sent: number, failed: number, total: number): CampaignStatus {
+function calcStatus(
+  sent: number,
+  failed: number,
+  total: number,
+  current?: CampaignStatus,
+): CampaignStatus {
+  if (current === "Preparing") return "Preparing";
+  if (current === "Scheduled") return "Scheduled";
+  if (total > 0 && sent + failed >= total) return "Completed";
+  if (sent + failed === 0 && total === 0) return current ?? "Paused";
+  if (sent + failed === 0) return "Running";
   if (sent + failed >= total) return "Completed";
-  if (sent + failed === 0) return "Paused";
   return "Running";
+}
+
+const AUDIENCE_PAGES_PER_CHUNK = 5;
+const AUDIENCE_PAGE_SIZE = 100;
+
+function isSendQueueMessage(
+  msg: CampaignQueueMessage,
+): msg is Extract<CampaignQueueMessage, { kind: "send" }> {
+  return msg.kind === "send" || ("phone" in msg && typeof msg.phone === "string");
+}
+
+async function enqueueSendMessage(
+  env: Env,
+  input: { campaignId: string; phoneId: string; phone: string; body: string },
+) {
+  await env.CAMPAIGN_QUEUE.send({ kind: "send", ...input });
+}
+
+async function enqueueSendMessagesForPhones(
+  env: Env,
+  campaign: Campaign,
+  phones: PhoneResult[],
+) {
+  let queued = 0;
+  for (const p of phones) {
+    if (p.status !== "Pending") continue;
+    await enqueueSendMessage(env, {
+      campaignId: campaign.id,
+      phoneId: p.id,
+      phone: p.phone,
+      body: campaign.message,
+    });
+    queued += 1;
+  }
+  return queued;
+}
+
+async function startCampaignAudienceBuild(
+  env: Env,
+  campaignId: string,
+  brandId: string,
+  tag: string,
+) {
+  await env.CAMPAIGN_QUEUE.send({
+    kind: "build_audience",
+    campaignId,
+    brandId,
+    tag,
+    offset: 0,
+    nextPhoneSeq: 1,
+  });
+}
+
+/** Pulls AC contacts in small queue chunks so campaign create never times out. */
+async function processAudienceBuildChunk(
+  env: Env,
+  msg: Extract<CampaignQueueMessage, { kind: "build_audience" }>,
+) {
+  const campaign = await kvGetJSON<Campaign>(env.SMS_KV, key.campaign(msg.campaignId));
+  if (!campaign || campaign.deletedAt) return;
+
+  const brand = await kvGetJSON<Brand>(env.SMS_KV, key.brand(msg.brandId));
+  if (!brand) return;
+
+  const prevPhones =
+    (await kvGetJSON<PhoneResult[]>(env.SMS_KV, key.campaignPhones(msg.campaignId))) ?? [];
+  const seen = new Set(prevPhones.map((p) => p.phone));
+  const phones = [...prevPhones];
+  const prevLen = phones.length;
+
+  let offset = msg.offset;
+  let nextSeq = msg.nextPhoneSeq;
+  let pagesDone = 0;
+  let done = false;
+
+  if (!brand.activeCampaignApiUrl || !brand.activeCampaignApiKey) {
+    const mock = makeMockPhones(
+      Math.max(1, parseInt(env.DEFAULT_CONTACT_COUNT ?? "120", 10)),
+    );
+    for (const row of mock) {
+      if (!seen.has(row.phone)) {
+        phones.push({ id: `p-${nextSeq++}`, phone: row.phone, status: "Pending" });
+        seen.add(row.phone);
+      }
+    }
+    done = true;
+  } else {
+    while (pagesDone < AUDIENCE_PAGES_PER_CHUNK) {
+      const page = await fetchPhonePageFromActiveCampaignByTag(
+        brand,
+        msg.tag,
+        offset,
+        AUDIENCE_PAGE_SIZE,
+      );
+      if (page.rows === 0) {
+        done = true;
+        break;
+      }
+      for (const phone of page.phones) {
+        if (seen.has(phone)) continue;
+        seen.add(phone);
+        phones.push({ id: `p-${nextSeq++}`, phone, status: "Pending" });
+      }
+      offset += page.rows;
+      pagesDone += 1;
+      if (page.done) {
+        done = true;
+        break;
+      }
+    }
+  }
+
+  const added = phones.slice(prevLen);
+  const wasPreparing = campaign.status === "Preparing";
+  let nextStatus: CampaignStatus = campaign.status;
+  if (done) {
+    nextStatus =
+      campaign.status === "Scheduled"
+        ? "Scheduled"
+        : "Running";
+  } else if (campaign.status !== "Scheduled") {
+    nextStatus = "Preparing";
+  }
+
+  const updated: Campaign = {
+    ...campaign,
+    total: phones.length,
+    status: nextStatus,
+    queueProgress:
+      campaign.status === "Running" && phones.length > 0
+        ? Math.min(
+            100,
+            Math.round(((campaign.sent + campaign.failed) / phones.length) * 100),
+          )
+        : 0,
+  };
+
+  await Promise.all([
+    kvPutJSON(env.SMS_KV, key.campaign(msg.campaignId), updated),
+    kvPutJSON(env.SMS_KV, key.campaignPhones(msg.campaignId), phones),
+  ]);
+
+  if (!done) {
+    await env.CAMPAIGN_QUEUE.send({
+      kind: "build_audience",
+      campaignId: msg.campaignId,
+      brandId: msg.brandId,
+      tag: msg.tag,
+      offset,
+      nextPhoneSeq: nextSeq,
+    });
+    return;
+  }
+
+  if (updated.status === "Running") {
+    if (done) {
+      await enqueueSendMessagesForPhones(env, updated, wasPreparing ? phones : added);
+    } else if (campaign.status === "Running") {
+      await enqueueSendMessagesForPhones(env, updated, added);
+    }
+  }
 }
 
 // phones[] is the source of truth for delivery outcomes. KV writes are eventually
@@ -379,7 +660,7 @@ async function reconcileCampaignAggregates(
   base: Campaign,
   phones: PhoneResult[],
 ): Promise<Campaign> {
-  if (base.status === "Scheduled") return base;
+  if (base.status === "Scheduled" || base.status === "Preparing") return base;
   const sent = phones.filter((p) => p.status === "Success").length;
   const failed = phones.filter((p) => p.status === "Failed").length;
   const total = base.total > 0 ? base.total : phones.length;
@@ -540,10 +821,14 @@ async function updateSubscriberDaily(
   await Promise.all(writes);
 }
 
-async function processSingleMessage(env: Env, msg: CampaignQueueMessage) {
+async function processSingleMessage(
+  env: Env,
+  msg: Extract<CampaignQueueMessage, { kind: "send" }>,
+) {
   const campaign = await kvGetJSON<Campaign>(env.SMS_KV, key.campaign(msg.campaignId));
   const phones = await kvGetJSON<PhoneResult[]>(env.SMS_KV, key.campaignPhones(msg.campaignId));
   if (!campaign || !phones) return;
+  if (campaign.status === "Preparing" || campaign.status === "Scheduled") return;
 
   const idx = phones.findIndex((p) => p.id === msg.phoneId);
   if (idx === -1) return;
@@ -619,7 +904,7 @@ async function processSingleMessage(env: Env, msg: CampaignQueueMessage) {
     sent,
     failed,
     queueProgress: Math.min(100, progress),
-    status: calcStatus(sent, failed, campaign.total),
+    status: calcStatus(sent, failed, campaign.total, campaign.status),
   };
 
   await Promise.all([
@@ -663,16 +948,7 @@ async function listCampaigns(env: Env): Promise<Campaign[]> {
 async function enqueuePendingCampaignPhones(env: Env, campaign: Campaign) {
   const phones = await kvGetJSON<PhoneResult[]>(env.SMS_KV, key.campaignPhones(campaign.id));
   if (!phones || phones.length === 0) return 0;
-  const pending = phones.filter((p) => p.status === "Pending");
-  for (const p of pending) {
-    await env.CAMPAIGN_QUEUE.send({
-      campaignId: campaign.id,
-      phoneId: p.id,
-      phone: p.phone,
-      body: campaign.message,
-    });
-  }
-  return pending.length;
+  return enqueueSendMessagesForPhones(env, campaign, phones);
 }
 
 async function releaseDueScheduledCampaigns(env: Env, limit = 25) {
@@ -697,7 +973,7 @@ async function releaseDueScheduledCampaigns(env: Env, limit = 25) {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
     if (request.method === "OPTIONS") {
@@ -719,6 +995,8 @@ export default {
           health: "/health",
           brands: "/brands",
           brandAcTags: "GET /brands/:id/activecampaign/tags",
+          brandTagSubscribers: "GET /brands/:id/subscribers?tag=TAG_NAME",
+          brandTagSubscribersWarmup: "POST /brands/:id/subscribers/warmup",
           campaigns: "/campaigns",
           campaignDetail: "/campaigns/:id",
           campaignRetryPhone: "POST /campaigns/:id/phones/:phoneId/retry",
@@ -954,7 +1232,7 @@ export default {
                 sent,
                 failed,
                 queueProgress: Math.min(100, progress),
-                status: calcStatus(sent, failed, campaign.total),
+                status: calcStatus(sent, failed, campaign.total, campaign.status),
               } satisfies Campaign),
             ]);
           }
@@ -1022,6 +1300,13 @@ export default {
         kvPutJSON(env.SMS_KV, key.brand(id), item),
         appendUnique(env.SMS_KV, key.brands, id),
       ]);
+      if (item.activeCampaignApiUrl && item.activeCampaignApiKey) {
+        ctx.waitUntil(
+          warmBrandTagSubscriberCaches(env, item, { maxTags: 8, maxPages: 1 }).catch(
+            () => undefined,
+          ),
+        );
+      }
       return json({ ok: true, brand: item }, 201);
     }
 
@@ -1049,14 +1334,34 @@ export default {
             key.brandTagsCache(brandId),
           );
           if (cached && Date.now() - cached.fetchedAt < ttlMs) {
-            return json({ ok: true, tags: cached.tags, cached: true });
+            const tagsWithCounts = await Promise.all(
+              cached.tags.map(async (t) => {
+                const row = await readTagSubscriberCount(env, brandId, t.tag);
+                return {
+                  ...t,
+                  totalSubscribers: row?.totalSubscribers ?? (t as { totalSubscribers?: number }).totalSubscribers ?? 0,
+                  cacheStatus: row?.status ?? (t as { cacheStatus?: string }).cacheStatus ?? "stale",
+                };
+              }),
+            );
+            return json({ ok: true, tags: tagsWithCounts, cached: true });
           }
           const tags = await fetchActiveCampaignTags(existing);
+          const tagsWithCounts = await Promise.all(
+            tags.map(async (t) => {
+              const cached = await readTagSubscriberCount(env, brandId, t.tag);
+              return {
+                ...t,
+                totalSubscribers: cached?.totalSubscribers ?? 0,
+                cacheStatus: cached?.status ?? "stale",
+              };
+            }),
+          );
           await kvPutJSON(env.SMS_KV, key.brandTagsCache(brandId), {
             fetchedAt: Date.now(),
-            tags,
+            tags: tagsWithCounts,
           });
-          return json({ ok: true, tags, cached: false });
+          return json({ ok: true, tags: tagsWithCounts, cached: false });
         } catch (e) {
           const reason = e instanceof Error ? e.message : "Unknown error";
           return json(
@@ -1064,6 +1369,84 @@ export default {
             502,
           );
         }
+      }
+
+      if (url.pathname.endsWith("/subscribers/warmup") && request.method === "POST") {
+        if (!existing.activeCampaignApiUrl || !existing.activeCampaignApiKey) {
+          return json(
+            { ok: false, error: "ActiveCampaign is not configured for this brand." },
+            400,
+          );
+        }
+        ctx.waitUntil(
+          warmBrandTagSubscriberCaches(env, existing, {
+            maxTags: 5,
+            maxPages: 1,
+            resetCursor: false,
+          }).catch(() => undefined),
+        );
+        return json({ ok: true, warming: true });
+      }
+
+      if (url.pathname.endsWith("/subscribers") && request.method === "GET") {
+        const tagName = url.searchParams.get("tag")?.trim() ?? "";
+        if (!tagName) {
+          return json({ ok: false, error: "tag query parameter is required." }, 400);
+        }
+        if (!existing.activeCampaignApiUrl || !existing.activeCampaignApiKey) {
+          return json(
+            { ok: false, error: "ActiveCampaign is not configured for this brand." },
+            400,
+          );
+        }
+        const shouldRefresh = url.searchParams.get("refresh") === "1";
+        const maxPages = Math.max(
+          1,
+          Math.min(parseInt(url.searchParams.get("maxPages") || "2", 10), 20),
+        );
+        const { cacheKey, cursorKey } = brandSubscriberKeys(existing, tagName);
+        let cache = await kvGetJSON<BrandSubscriberCache>(env.SMS_KV, cacheKey);
+        let cursorKeyResolved = cursorKey;
+        if (!cache) {
+          const dashboardTag = (existing.dashboardTag || "").trim();
+          if (dashboardTag && tagsMatch(tagName, dashboardTag)) {
+            const dashKeys = brandSubscriberKeys(existing);
+            cache = await kvGetJSON<BrandSubscriberCache>(env.SMS_KV, dashKeys.cacheKey);
+            cursorKeyResolved = dashKeys.cursorKey;
+          }
+        }
+        const hadCache = Boolean(cache);
+        if (shouldRefresh) {
+          cache = await refreshBrandSubscriberCache(env, existing, maxPages, tagName);
+          cursorKeyResolved = brandSubscriberKeys(existing, tagName).cursorKey;
+        } else if (!cache) {
+          cache = {
+            brandId: existing.id,
+            brandName: existing.name,
+            allContacts: 0,
+            totalSubscribers: 0,
+            activeSmsSubscribers: 0,
+            unsubscribedTotal: 0,
+            fetchOk: false,
+            fetchError: "No tag audience cache yet. Wait for cron or run Recount on the dashboard.",
+            status: "stale",
+            updatedAt: now(),
+            dashboardTag: tagName,
+            audienceScope: "tag",
+          };
+        }
+        const cursor = await kvGetJSON<BrandSubscriberCursor>(env.SMS_KV, cursorKeyResolved);
+        return json({
+          ok: true,
+          subscribers: {
+            ...cache,
+            tag: tagName,
+            walkedOffset: cursor?.offset ?? 0,
+            walkedTotal: cursor?.totalContacts ?? cache.allContacts ?? 0,
+            walkDone: cursor?.done ?? false,
+          },
+          cached: hadCache && !shouldRefresh,
+        });
       }
 
       if (request.method === "PUT") {
@@ -1086,6 +1469,12 @@ export default {
 
         if (acUrlChanged || acKeyChanged) {
           await env.SMS_KV.delete(key.brandTagsCache(brandId));
+          await env.SMS_KV.delete(key.brandTagRefreshCursor(brandId));
+          ctx.waitUntil(
+            warmBrandTagSubscriberCaches(env, updated, { maxTags: 8, maxPages: 1 }).catch(
+              () => undefined,
+            ),
+          );
         }
         if (tagChanged) {
           if (prevTag) await invalidateBrandTagSubscriberCache(env, brandId, prevTag);
@@ -1162,38 +1551,13 @@ export default {
           return json({ ok: false, error: "Scheduled time must be in the future." }, 400);
         }
       }
-      const targetCount = Math.max(1, parseInt(env.DEFAULT_CONTACT_COUNT ?? "120", 10));
       const brand = await kvGetJSON<Brand>(env.SMS_KV, key.brand(brandId));
       if (!brand) {
         return json({ ok: false, error: "Brand not found. Add brand first." }, 400);
       }
 
-      let phoneNumbers: string[] = [];
-      let audienceSource: "activecampaign" | "mock" = "mock";
-      if (brand.activeCampaignApiUrl && brand.activeCampaignApiKey) {
-        try {
-          phoneNumbers = await fetchPhonesFromActiveCampaign(
-            brand,
-            tag,
-            targetCount,
-          );
-          if (phoneNumbers.length > 0) {
-            audienceSource = "activecampaign";
-          }
-        } catch {
-          /* fall through to mock audience */
-        }
-      }
-      if (phoneNumbers.length === 0) {
-        phoneNumbers = makeMockPhones(targetCount).map((p) => p.phone);
-      }
-
-      const phones: PhoneResult[] = phoneNumbers.map((phone, idx) => ({
-        id: `p-${idx + 1}`,
-        phone,
-        status: "Pending",
-      }));
-      const total = phones.length;
+      const audienceSource =
+        brand.activeCampaignApiUrl && brand.activeCampaignApiKey ? "activecampaign" : "mock";
       const item: Campaign = {
         id,
         name: `${brand.name} — ${tag}`,
@@ -1201,10 +1565,10 @@ export default {
         brandId,
         tag,
         message,
-        total,
+        total: 0,
         sent: 0,
         failed: 0,
-        status: isScheduled ? "Scheduled" : "Running",
+        status: isScheduled ? "Scheduled" : "Preparing",
         important: false,
         createdAt: now(),
         queueProgress: 0,
@@ -1214,14 +1578,15 @@ export default {
       };
       await Promise.all([
         kvPutJSON(env.SMS_KV, key.campaign(id), item),
-        kvPutJSON(env.SMS_KV, key.campaignPhones(id), phones),
+        kvPutJSON(env.SMS_KV, key.campaignPhones(id), [] as PhoneResult[]),
         kvPutJSON(env.SMS_KV, key.campaignMeta(id), defaultMeta()),
         appendUnique(env.SMS_KV, key.campaigns, id),
       ]);
-      if (!isScheduled) {
-        await enqueuePendingCampaignPhones(env, item);
-      }
-      return json({ ok: true, campaign: item, audienceSource }, 201);
+      await startCampaignAudienceBuild(env, id, brandId, tag);
+      return json(
+        { ok: true, campaign: item, audienceSource, audienceBuilding: true },
+        201,
+      );
     }
 
     if (url.pathname.startsWith("/campaigns/")) {
@@ -1266,7 +1631,7 @@ export default {
           phone.failureSource = undefined;
           phone.failedAt = undefined;
           phone.twilioSid = undefined;
-          await env.CAMPAIGN_QUEUE.send({
+          await enqueueSendMessage(env, {
             campaignId,
             phoneId: phone.id,
             phone: phone.phone,
@@ -1301,7 +1666,7 @@ export default {
           failedAt: undefined,
           twilioSid: undefined,
         };
-        await env.CAMPAIGN_QUEUE.send({
+        await enqueueSendMessage(env, {
           campaignId,
           phoneId: phones[idx].id,
           phone: phones[idx].phone,
@@ -1527,7 +1892,12 @@ export default {
   async queue(batch: MessageBatch<CampaignQueueMessage>, env: Env): Promise<void> {
     for (const message of batch.messages) {
       try {
-        await processSingleMessage(env, message.body);
+        const body = message.body;
+        if (body.kind === "build_audience") {
+          await processAudienceBuildChunk(env, body);
+        } else if (isSendQueueMessage(body)) {
+          await processSingleMessage(env, body);
+        }
         message.ack();
       } catch {
         message.retry();
@@ -1550,7 +1920,10 @@ export default {
         (b): b is Brand => Boolean(b && b.activeCampaignApiUrl && b.activeCampaignApiKey),
       );
       for (const brand of targets) {
+        // Dashboard tag (or account) — 2 pages; separate from SMS queue consumer.
         await refreshBrandSubscriberCache(env, brand, 2);
+        // One extra tag per brand per 15 min (1 page) — keeps AC load low vs campaign sends.
+        await refreshNextBrandTagInCron(env, brand, 1);
       }
     }
     await releaseDueScheduledCampaigns(env, 100);

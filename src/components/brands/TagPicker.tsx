@@ -15,6 +15,8 @@ type TagPickerProps = {
   disabled?: boolean
   placeholder?: string
   helperText?: string
+  /** Show total subscribers beside the selected tag in the dropdown. */
+  tagAudienceCount?: number
   /** Open list above the input (best inside modals so it is not clipped by the footer). */
   menuPlacement?: 'below' | 'above'
 }
@@ -30,6 +32,7 @@ export function TagPicker({
   disabled = false,
   placeholder,
   helperText,
+  tagAudienceCount,
   menuPlacement = 'below',
 }: TagPickerProps) {
   const [showMenu, setShowMenu] = useState(false)
@@ -77,14 +80,24 @@ export function TagPicker({
               <button
                 key={t.id}
                 type="button"
-                className="block w-full px-3 py-2 text-left text-sm text-slate-700 hover:bg-blue-50"
+                className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm text-slate-700 hover:bg-blue-50"
                 onMouseDown={(e) => {
                   e.preventDefault()
                   onChange(t.tag)
                   setShowMenu(false)
                 }}
               >
-                {t.tag}
+                <span>{t.tag}</span>
+                {value.trim().toLowerCase() === t.tag.trim().toLowerCase() &&
+                tagAudienceCount !== undefined ? (
+                  <span className="shrink-0 text-xs font-medium text-violet-700">
+                    {tagAudienceCount.toLocaleString()} subs
+                  </span>
+                ) : typeof t.totalSubscribers === 'number' && t.totalSubscribers > 0 ? (
+                  <span className="shrink-0 text-xs font-medium text-slate-500">
+                    {t.totalSubscribers.toLocaleString()} subs
+                  </span>
+                ) : null}
               </button>
             ))
           ) : (

@@ -108,6 +108,7 @@ export function CampaignListPage() {
               onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)}
             >
               <option value="all">All statuses</option>
+              <option value="Preparing">Preparing</option>
               <option value="Running">Running</option>
               <option value="Scheduled">Scheduled</option>
               <option value="Completed">Completed</option>

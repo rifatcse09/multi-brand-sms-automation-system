@@ -1,7 +1,12 @@
 import type { Brand, Campaign, CampaignStatus } from '../types'
 
 type WorkerMetric = Record<string, unknown>
-export type WorkerBrandTag = { id: string; tag: string }
+export type WorkerBrandTag = {
+  id: string
+  tag: string
+  totalSubscribers?: number
+  cacheStatus?: WorkerSubscriberCacheStatus
+}
 export type WorkerSubscriberCacheStatus = 'fresh' | 'partial' | 'stale'
 
 export type WorkerSubscriberBrand = {
@@ -116,6 +121,7 @@ function parseMetricsArray(payload: unknown): WorkerMetric[] {
 
 function toCampaignStatus(value: string): CampaignStatus {
   const normalized = value.toLowerCase()
+  if (normalized.includes('prep') || normalized.includes('build')) return 'Preparing'
   if (normalized.includes('sched')) return 'Scheduled'
   if (normalized.includes('pause')) return 'Paused'
   if (normalized.includes('run') || normalized.includes('progress')) return 'Running'
@@ -160,7 +166,8 @@ function mapWorkerCampaignRow(
     statusRaw === 'Running' ||
     statusRaw === 'Completed' ||
     statusRaw === 'Paused' ||
-    statusRaw === 'Scheduled'
+    statusRaw === 'Scheduled' ||
+    statusRaw === 'Preparing'
       ? statusRaw
       : statusRaw.length > 0
         ? toCampaignStatus(statusRaw)
@@ -344,6 +351,28 @@ export async function fetchWorkerBrandTags(brandId: string) {
   return ((payload.tags as WorkerBrandTag[] | undefined) ?? []).filter(
     (x) => typeof x?.id === 'string' && typeof x?.tag === 'string',
   )
+}
+
+export async function warmupWorkerBrandTagSubscribers(brandId: string) {
+  const payload = await requestJson(
+    `/brands/${encodeURIComponent(brandId)}/subscribers/warmup`,
+    { method: 'POST' },
+  )
+  return payload as { ok: true; warming: boolean }
+}
+
+export async function fetchWorkerBrandTagSubscribers(
+  brandId: string,
+  tag: string,
+  options?: { refresh?: boolean; maxPages?: number },
+): Promise<WorkerSubscriberBrand & { tag?: string }> {
+  const params: Record<string, string> = { tag }
+  if (options?.refresh) params.refresh = '1'
+  if (options?.maxPages) params.maxPages = String(options.maxPages)
+  const payload = (await requestJson(`/brands/${encodeURIComponent(brandId)}/subscribers`, {
+    params,
+  })) as { subscribers?: Record<string, unknown> }
+  return mapSubscriberBrand(payload.subscribers ?? {})
 }
 
 export async function fetchWorkerSentVsFailed() {

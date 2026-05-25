@@ -1,4 +1,4 @@
-export type CampaignStatus = 'Running' | 'Completed' | 'Paused' | 'Scheduled'
+export type CampaignStatus = 'Running' | 'Completed' | 'Paused' | 'Scheduled' | 'Preparing'
 
 export interface PhoneResult {
   id: string

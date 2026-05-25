@@ -9,13 +9,7 @@ import { Skeleton } from '../components/ui/Skeleton'
 import { StatusBadge } from '../components/ui/Badge'
 import { useAppData } from '../context/AppDataContext'
 import { useDelayedReady } from '../hooks/useDelayedReady'
-import {
-  fetchWorkerSubscriberSummary,
-  isWorkerConfigured,
-  refreshWorkerSubscribers,
-  type WorkerSubscriberBrand,
-  type WorkerSubscriberSummary,
-} from '../services/smsWorkerApi'
+import { type WorkerSubscriberBrand } from '../services/smsWorkerApi'
 
 const ALL_BRANDS = 'all'
 
@@ -268,15 +262,19 @@ function BrandCard({
 }
 
 export function DashboardHome() {
-  const { campaigns, brands, getBrandName, workerLinked } = useAppData()
+  const {
+    campaigns,
+    brands,
+    getBrandName,
+    workerLinked,
+    subscriberSummary,
+    loadingSubscriberSummary,
+    refreshBrandSubscribers,
+  } = useAppData()
   const ready = useDelayedReady()
   const [searchParams, setSearchParams] = useSearchParams()
   const selectedBrandId = searchParams.get('brand')?.trim() || ALL_BRANDS
 
-  const [subscriberSummary, setSubscriberSummary] = useState<WorkerSubscriberSummary | null>(
-    null,
-  )
-  const [loadingSubscriberSummary, setLoadingSubscriberSummary] = useState(false)
   const [refreshingBrandIds, setRefreshingBrandIds] = useState<Set<string>>(new Set())
 
   const totals = useMemo(
@@ -389,38 +387,6 @@ export function DashboardHome() {
     },
   ]
 
-  const reloadSummary = useCallback(async () => {
-    if (!isWorkerConfigured()) return
-    setLoadingSubscriberSummary(true)
-    try {
-      const data = await fetchWorkerSubscriberSummary()
-      setSubscriberSummary(data)
-    } catch {
-      setSubscriberSummary(null)
-    } finally {
-      setLoadingSubscriberSummary(false)
-    }
-  }, [])
-
-  useEffect(() => {
-    let cancelled = false
-    void (async () => {
-      if (!isWorkerConfigured()) return
-      setLoadingSubscriberSummary(true)
-      try {
-        const data = await fetchWorkerSubscriberSummary()
-        if (!cancelled) setSubscriberSummary(data)
-      } catch {
-        if (!cancelled) setSubscriberSummary(null)
-      } finally {
-        if (!cancelled) setLoadingSubscriberSummary(false)
-      }
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
   useEffect(() => {
     if (selectedBrandId === ALL_BRANDS) return
     if (brands.length === 0) return
@@ -442,15 +408,13 @@ export function DashboardHome() {
 
   const handleRecount = useCallback(
     async (brandId: string) => {
-      if (!isWorkerConfigured()) return
       setRefreshingBrandIds((prev) => {
         const next = new Set(prev)
         next.add(brandId)
         return next
       })
       try {
-        await refreshWorkerSubscribers({ brandId, maxPages: 20 })
-        await reloadSummary()
+        await refreshBrandSubscribers(brandId)
       } catch {
         // ignore — fetch error will surface via worker error banner if persistent
       } finally {
@@ -461,7 +425,7 @@ export function DashboardHome() {
         })
       }
     },
-    [reloadSummary],
+    [refreshBrandSubscribers],
   )
 
   const selectedBrandSubscriber =

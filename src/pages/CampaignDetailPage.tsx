@@ -11,6 +11,66 @@ import { useAppData } from '../context/AppDataContext'
 import { fetchWorkerCampaignById, isWorkerConfigured } from '../services/smsWorkerApi'
 import type { Campaign, PhoneResult } from '../types'
 
+function failureSourceLabel(source?: string) {
+  switch (source) {
+    case 'twilio_rest':
+      return 'Twilio API (send rejected)'
+    case 'twilio_callback':
+      return 'Carrier / delivery failed'
+    case 'mock_simulated':
+      return 'Mock simulated failure'
+    default:
+      return 'Other / unknown'
+  }
+}
+
+function failureGroupLabel(phone: PhoneResult) {
+  const summary = phone.error?.trim()
+  if (summary) return summary
+  return failureSourceLabel(phone.failureSource)
+}
+
+type FailureGroupRow = {
+  key: string
+  label: string
+  source?: string
+  count: number
+  percentOfFailed: number
+  percentOfTotal: number
+}
+
+function buildFailureGroups(phones: PhoneResult[], total: number): FailureGroupRow[] {
+  const failed = phones.filter((p) => p.status === 'Failed')
+  if (failed.length === 0) return []
+
+  const map = new Map<string, FailureGroupRow>()
+  for (const phone of failed) {
+    const label = failureGroupLabel(phone)
+    const key = `${phone.failureSource ?? 'unknown'}::${label}`
+    const existing = map.get(key)
+    if (existing) {
+      existing.count += 1
+    } else {
+      map.set(key, {
+        key,
+        label,
+        source: phone.failureSource,
+        count: 1,
+        percentOfFailed: 0,
+        percentOfTotal: 0,
+      })
+    }
+  }
+
+  return Array.from(map.values())
+    .map((row) => ({
+      ...row,
+      percentOfFailed: Math.round((row.count / failed.length) * 1000) / 10,
+      percentOfTotal: total > 0 ? Math.round((row.count / total) * 1000) / 10 : 0,
+    }))
+    .sort((a, b) => b.count - a.count)
+}
+
 export function CampaignDetailPage() {
   const navigate = useNavigate()
   const { id } = useParams<{ id: string }>()
@@ -72,7 +132,30 @@ export function CampaignDetailPage() {
     return local ?? null
   }, [id, campaign, remoteCampaign])
 
-  if (!activeCampaign) {
+  const outcomeStats = useMemo(() => {
+    if (!activeCampaign) return null
+    const phones = activeCampaign.phones ?? []
+    const total = activeCampaign.total > 0 ? activeCampaign.total : phones.length
+    const sent = phones.filter((p) => p.status === 'Success').length
+    const failed = phones.filter((p) => p.status === 'Failed').length
+    const pending = phones.filter((p) => p.status === 'Pending').length
+    const resolved = sent + failed
+    const pctOf = (n: number) => (total > 0 ? Math.round((n / total) * 1000) / 10 : 0)
+    const failureRate = resolved > 0 ? Math.round((failed / resolved) * 1000) / 10 : pctOf(failed)
+    return {
+      total,
+      sent,
+      failed,
+      pending,
+      sentPct: pctOf(sent),
+      failedPct: pctOf(failed),
+      pendingPct: pctOf(pending),
+      failureRate,
+      failureGroups: buildFailureGroups(phones, total),
+    }
+  }, [activeCampaign])
+
+  if (!activeCampaign || !outcomeStats) {
     return (
       <div className="space-y-4">
         <Link to="/campaigns" className="inline-flex text-sm font-medium text-blue-600 hover:underline">
@@ -140,32 +223,104 @@ export function CampaignDetailPage() {
       <div className="grid gap-4 lg:grid-cols-3">
         <Card padding="md" className="lg:col-span-2">
           <CardHeader title="Overview" description="High-level delivery metrics for this send." />
+          {activeCampaign.status === 'Preparing' ? (
+            <p className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              Building audience from ActiveCampaign in the background. Total will climb,
+              then SMS sending starts automatically.
+            </p>
+          ) : null}
           <div className="grid gap-4 sm:grid-cols-3">
             <div className="rounded-lg border border-slate-100 bg-slate-50/60 p-4">
               <p className="text-xs font-medium text-slate-500">Total</p>
               <p className="mt-1 text-2xl font-semibold tabular-nums text-slate-900">
-                {activeCampaign.total.toLocaleString()}
+                {outcomeStats.total.toLocaleString()}
               </p>
             </div>
             <div className="rounded-lg border border-slate-100 bg-slate-50/60 p-4">
               <p className="text-xs font-medium text-slate-500">Sent</p>
-              <p className="mt-1 text-2xl font-semibold tabular-nums text-slate-900">
-                {activeCampaign.sent.toLocaleString()}
+              <p className="mt-1 text-2xl font-semibold tabular-nums text-emerald-800">
+                {outcomeStats.sent.toLocaleString()}
+              </p>
+              <p className="mt-0.5 text-xs tabular-nums text-slate-500">
+                {outcomeStats.sentPct}% of audience
               </p>
             </div>
             <div className="rounded-lg border border-slate-100 bg-slate-50/60 p-4">
               <p className="text-xs font-medium text-slate-500">Failed</p>
-              <p className="mt-1 text-2xl font-semibold tabular-nums text-slate-900">
-                {activeCampaign.failed.toLocaleString()}
+              <p className="mt-1 text-2xl font-semibold tabular-nums text-red-800">
+                {outcomeStats.failed.toLocaleString()}
+              </p>
+              <p className="mt-0.5 text-xs tabular-nums text-slate-500">
+                {outcomeStats.failedPct}% of audience
+                {outcomeStats.sent + outcomeStats.failed > 0
+                  ? ` · ${outcomeStats.failureRate}% failure rate`
+                  : ''}
               </p>
             </div>
           </div>
+          {outcomeStats.failed > 0 ? (
+            <div className="mt-6 rounded-lg border border-red-100 bg-red-50/40 p-4">
+              <p className="text-xs font-semibold uppercase tracking-wider text-red-900">
+                Failure breakdown
+              </p>
+              <p className="mt-1 text-sm text-red-950">
+                {outcomeStats.failed.toLocaleString()} failed (
+                {outcomeStats.failedPct}% of audience
+                {outcomeStats.sent + outcomeStats.failed > 0
+                  ? `, ${outcomeStats.failureRate}% of completed sends`
+                  : ''}
+                )
+              </p>
+              <ul className="mt-3 space-y-2">
+                {outcomeStats.failureGroups.map((group) => (
+                  <li key={group.key}>
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate font-medium text-slate-900" title={group.label}>
+                          {group.label}
+                        </p>
+                        {group.source ? (
+                          <p className="text-[11px] text-slate-500">{failureSourceLabel(group.source)}</p>
+                        ) : null}
+                      </div>
+                      <div className="shrink-0 text-right tabular-nums">
+                        <span className="font-semibold text-red-800">{group.count}</span>
+                        <span className="ml-2 text-xs text-slate-600">
+                          {group.percentOfFailed}% of failures
+                        </span>
+                        <span className="ml-1 text-xs text-slate-400">
+                          ({group.percentOfTotal}% total)
+                        </span>
+                      </div>
+                    </div>
+                    <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-red-100">
+                      <div
+                        className="h-full rounded-full bg-red-500"
+                        style={{ width: `${Math.min(100, group.percentOfFailed)}%` }}
+                      />
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {outcomeStats.pending > 0 ? (
+            <p className="mt-4 text-xs tabular-nums text-slate-500">
+              {outcomeStats.pending.toLocaleString()} pending ({outcomeStats.pendingPct}% of audience)
+            </p>
+          ) : null}
           <div className="mt-6">
             <div className="mb-2 flex items-center justify-between gap-2 text-sm">
               <span className="font-medium text-slate-700">Queue processing</span>
               <span className="tabular-nums text-slate-500">{pct}%</span>
             </div>
-            <ProgressBar value={activeCampaign.status === 'Running' ? activeCampaign.queueProgress : pct} />
+            <ProgressBar
+              value={
+                activeCampaign.status === 'Running' || activeCampaign.status === 'Preparing'
+                  ? activeCampaign.queueProgress
+                  : pct
+              }
+            />
           </div>
         </Card>
 

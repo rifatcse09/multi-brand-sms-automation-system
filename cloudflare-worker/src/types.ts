@@ -1,4 +1,4 @@
-export type CampaignStatus = "Running" | "Completed" | "Paused" | "Scheduled";
+export type CampaignStatus = "Running" | "Completed" | "Paused" | "Scheduled" | "Preparing";
 export type PhoneStatus = "Pending" | "Success" | "Failed";
 
 export interface KVNamespace {
@@ -95,12 +95,22 @@ export type PasswordReset = {
   requestedAt: string;
 };
 
-export type CampaignQueueMessage = {
-  campaignId: string;
-  phoneId: string;
-  phone: string;
-  body: string;
-};
+export type CampaignQueueMessage =
+  | {
+      kind: "send";
+      campaignId: string;
+      phoneId: string;
+      phone: string;
+      body: string;
+    }
+  | {
+      kind: "build_audience";
+      campaignId: string;
+      brandId: string;
+      tag: string;
+      offset: number;
+      nextPhoneSeq: number;
+    };
 
 export type Env = {
   SMS_KV: KVNamespace;

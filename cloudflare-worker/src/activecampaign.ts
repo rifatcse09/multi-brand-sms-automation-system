@@ -159,44 +159,67 @@ export async function countSmsContactsPageByTag(
   return { count, rows: contacts.length };
 }
 
+export async function fetchPhonePageFromActiveCampaignByTag(
+  brand: Brand,
+  tagName: string,
+  offset: number,
+  pageSize = 100,
+): Promise<{ phones: string[]; rows: number; done: boolean }> {
+  if (!brand.activeCampaignApiUrl || !brand.activeCampaignApiKey) {
+    return { phones: [], rows: 0, done: true };
+  }
+  if (!tagName) return { phones: [], rows: 0, done: true };
+
+  const tagId = await resolveActiveCampaignTagId(brand, tagName);
+  if (!tagId) return { phones: [], rows: 0, done: true };
+
+  const contactsResp = await acFetchJson(
+    brand,
+    `/api/3/contacts?tagid=${encodeURIComponent(tagId)}&limit=${pageSize}&offset=${offset}&include=fieldValues`,
+  );
+  const contacts =
+    (contactsResp.contacts as Array<Record<string, unknown>> | undefined) ?? [];
+  const pageFieldValues =
+    (contactsResp.fieldValues as
+      | Array<{ contact?: string | number; value?: string | number | null }>
+      | undefined) ?? [];
+  const byContact = mapFieldValuesByContact(pageFieldValues);
+
+  const phones: string[] = [];
+  const seen = new Set<string>();
+  for (const contact of contacts) {
+    const phone = phoneFromActiveCampaignContact(contact, byContact);
+    if (phone && !seen.has(phone)) {
+      seen.add(phone);
+      phones.push(phone);
+    }
+  }
+
+  const done = contacts.length === 0 || contacts.length < pageSize;
+  return { phones, rows: contacts.length, done };
+}
+
 export async function fetchPhonesFromActiveCampaign(
   brand: Brand,
   tagName: string,
-  maxCount: number,
+  maxCount?: number,
 ): Promise<string[]> {
   if (!brand.activeCampaignApiUrl || !brand.activeCampaignApiKey) return [];
   if (!tagName) return [];
 
-  const tagId = await resolveActiveCampaignTagId(brand, tagName);
-  if (!tagId) return [];
-
   const result: string[] = [];
   let offset = 0;
   const pageSize = 100;
-  while (result.length < maxCount) {
-    const contactsResp = await acFetchJson(
-      brand,
-      `/api/3/contacts?tagid=${encodeURIComponent(tagId)}&limit=${pageSize}&offset=${offset}&include=fieldValues`,
-    );
-    const contacts =
-      (contactsResp.contacts as Array<Record<string, unknown>> | undefined) ?? [];
-    const pageFieldValues =
-      (contactsResp.fieldValues as
-        | Array<{ contact?: string | number; value?: string | number | null }>
-        | undefined) ?? [];
-    const byContact = mapFieldValuesByContact(pageFieldValues);
-    if (contacts.length === 0) break;
-
-    for (const contact of contacts) {
-      const phone = phoneFromActiveCampaignContact(contact, byContact);
-      if (phone && !result.includes(phone)) {
-        result.push(phone);
-      }
-      if (result.length >= maxCount) break;
+  while (maxCount === undefined || result.length < maxCount) {
+    const page = await fetchPhonePageFromActiveCampaignByTag(brand, tagName, offset, pageSize);
+    if (page.rows === 0) break;
+    for (const phone of page.phones) {
+      if (!result.includes(phone)) result.push(phone);
+      if (maxCount !== undefined && result.length >= maxCount) break;
     }
-
-    if (contacts.length < pageSize) break;
-    offset += pageSize;
+    if (maxCount !== undefined && result.length >= maxCount) break;
+    if (page.done) break;
+    offset += page.rows;
   }
 
   return result;

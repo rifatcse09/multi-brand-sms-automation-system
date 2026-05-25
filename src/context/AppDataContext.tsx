@@ -16,10 +16,14 @@ import {
   fetchWorkerCampaigns,
   fetchWorkerCampaignById,
   fetchWorkerHealth,
+  fetchWorkerSubscriberSummary,
   isWorkerConfigured,
+  refreshWorkerSubscribers,
   retryWorkerPhone,
   updateWorkerBrand,
   deleteWorkerCampaign,
+  type WorkerSubscriberBrand,
+  type WorkerSubscriberSummary,
 } from '../services/smsWorkerApi'
 
 let idSeq = 100
@@ -49,6 +53,11 @@ type AppDataContextValue = {
   retryPhone: (campaignId: string, phoneId: string) => void
   deleteCampaign: (campaignId: string) => void
   getBrandName: (id: string) => string
+  subscriberSummary: WorkerSubscriberSummary | null
+  loadingSubscriberSummary: boolean
+  getBrandSubscriber: (brandId: string) => WorkerSubscriberBrand | undefined
+  reloadSubscriberSummary: () => Promise<void>
+  refreshBrandSubscribers: (brandId: string) => Promise<void>
 }
 
 const AppDataContext = createContext<AppDataContextValue | null>(null)
@@ -58,6 +67,8 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
   const [campaigns, setCampaigns] = useState<Campaign[]>([])
   const [workerLinked, setWorkerLinked] = useState(false)
   const [workerError, setWorkerError] = useState<string | null>(null)
+  const [subscriberSummary, setSubscriberSummary] = useState<WorkerSubscriberSummary | null>(null)
+  const [loadingSubscriberSummary, setLoadingSubscriberSummary] = useState(false)
   const workerEnabled = isWorkerConfigured()
 
   const mergeImportantFlag = useCallback((next: Campaign[]) => {
@@ -91,6 +102,33 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     }
   }, [workerEnabled])
 
+  const reloadSubscriberSummary = useCallback(async () => {
+    if (!workerEnabled) return
+    setLoadingSubscriberSummary(true)
+    try {
+      const data = await fetchWorkerSubscriberSummary()
+      setSubscriberSummary(data)
+    } catch {
+      setSubscriberSummary(null)
+    } finally {
+      setLoadingSubscriberSummary(false)
+    }
+  }, [workerEnabled])
+
+  const getBrandSubscriber = useCallback(
+    (brandId: string) => subscriberSummary?.byBrand.find((x) => x.brandId === brandId),
+    [subscriberSummary],
+  )
+
+  const refreshBrandSubscribers = useCallback(
+    async (brandId: string) => {
+      if (!workerEnabled) return
+      await refreshWorkerSubscribers({ brandId, maxPages: 20 })
+      await reloadSubscriberSummary()
+    },
+    [reloadSubscriberSummary, workerEnabled],
+  )
+
   useEffect(() => {
     if (!workerEnabled) return
     let active = true
@@ -100,6 +138,17 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       setWorkerLinked(true)
       await syncBrandsFromWorker()
       await syncCampaignsFromWorker()
+      if (active) {
+        setLoadingSubscriberSummary(true)
+        try {
+          const data = await fetchWorkerSubscriberSummary()
+          if (active) setSubscriberSummary(data)
+        } catch {
+          if (active) setSubscriberSummary(null)
+        } finally {
+          if (active) setLoadingSubscriberSummary(false)
+        }
+      }
     }
     void bootstrap()
     return () => {
@@ -108,13 +157,14 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
   }, [syncBrandsFromWorker, syncCampaignsFromWorker, workerEnabled])
 
   useEffect(() => {
-    if (!workerEnabled) return
+    if (!workerEnabled || !workerLinked) return
     const timer = window.setInterval(() => {
       void syncBrandsFromWorker()
       void syncCampaignsFromWorker()
+      void reloadSubscriberSummary()
     }, 8000)
     return () => window.clearInterval(timer)
-  }, [syncBrandsFromWorker, syncCampaignsFromWorker, workerEnabled])
+  }, [syncBrandsFromWorker, syncCampaignsFromWorker, reloadSubscriberSummary, workerEnabled, workerLinked])
 
   const getBrandName = useCallback(
     (id: string) => brands.find((b) => b.id === id)?.name ?? 'Unknown brand',
@@ -346,6 +396,11 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       retryPhone,
       deleteCampaign: deleteCampaignLocal,
       getBrandName,
+      subscriberSummary,
+      loadingSubscriberSummary,
+      getBrandSubscriber,
+      reloadSubscriberSummary,
+      refreshBrandSubscribers,
     }),
     [
       brands,
@@ -360,6 +415,11 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       retryPhone,
       deleteCampaignLocal,
       getBrandName,
+      subscriberSummary,
+      loadingSubscriberSummary,
+      getBrandSubscriber,
+      reloadSubscriberSummary,
+      refreshBrandSubscribers,
     ],
   )
 
