@@ -454,6 +454,28 @@ export async function retryWorkerPhone(campaignId: string, phoneId: string) {
   })
 }
 
+export async function resumeWorkerCampaign(campaignId: string) {
+  const payload = (await requestJson(`/campaigns/${campaignId}/resume`, {
+    method: 'POST',
+  })) as {
+    ok?: boolean
+    queued?: number
+    pending?: number
+    resuming?: boolean
+    message?: string
+    error?: string
+  }
+  if (!payload.ok) {
+    throw new Error(typeof payload.error === 'string' ? payload.error : 'Resume failed')
+  }
+  return {
+    queued: typeof payload.queued === 'number' ? payload.queued : 0,
+    pending: typeof payload.pending === 'number' ? payload.pending : 0,
+    resuming: Boolean(payload.resuming),
+    message: typeof payload.message === 'string' ? payload.message : undefined,
+  }
+}
+
 export async function fetchWorkerCampaignById(id: string) {
   const payload = (await requestJson(`/campaigns/${id}`)) as {
     ok?: boolean

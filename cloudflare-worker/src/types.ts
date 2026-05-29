@@ -110,6 +110,11 @@ export type CampaignQueueMessage =
       tag: string;
       offset: number;
       nextPhoneSeq: number;
+    }
+  | {
+      kind: "resume_sends";
+      campaignId: string;
+      cursor: number;
     };
 
 export type Env = {

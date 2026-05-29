@@ -8,7 +8,11 @@ import { ProgressBar } from '../components/ui/ProgressBar'
 import { TableWrap, Th, Td } from '../components/ui/Table'
 import { StatusBadge } from '../components/ui/Badge'
 import { useAppData } from '../context/AppDataContext'
-import { fetchWorkerCampaignById, isWorkerConfigured } from '../services/smsWorkerApi'
+import {
+  fetchWorkerCampaignById,
+  isWorkerConfigured,
+  resumeWorkerCampaign,
+} from '../services/smsWorkerApi'
 import type { Campaign, PhoneResult } from '../types'
 
 function failureSourceLabel(source?: string) {
@@ -80,6 +84,14 @@ export function CampaignDetailPage() {
   const [loadingRemote, setLoadingRemote] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [failureLogPhone, setFailureLogPhone] = useState<PhoneResult | null>(null)
+  const [resuming, setResuming] = useState(false)
+  const [resumeMessage, setResumeMessage] = useState<string | null>(null)
+
+  const reloadRemoteCampaign = async () => {
+    if (!id || !isWorkerConfigured()) return
+    const res = await fetchWorkerCampaignById(id)
+    setRemoteCampaign(res.campaign as Campaign)
+  }
 
   useEffect(() => {
     if (!id || !isWorkerConfigured()) return
@@ -206,8 +218,45 @@ export function CampaignDetailPage() {
             <p className="mt-1 text-sm font-medium text-purple-700">Scheduled at: {scheduledLabel}</p>
           ) : null}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <StatusBadge status={activeCampaign.status} />
+          {isWorkerConfigured() &&
+          outcomeStats.pending > 0 &&
+          (activeCampaign.status === 'Running' ||
+            activeCampaign.status === 'Paused' ||
+            activeCampaign.status === 'Completed') ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={resuming}
+              onClick={() => {
+                if (!id) return
+                setResuming(true)
+                setResumeMessage(null)
+                void (async () => {
+                  try {
+                    const result = await resumeWorkerCampaign(id)
+                    setResumeMessage(
+                      result.message ??
+                        (result.queued > 0
+                          ? `Re-queued ${result.queued.toLocaleString()} pending message(s). Refresh in a few minutes.`
+                          : 'No pending messages were re-queued.'),
+                    )
+                    await reloadRemoteCampaign()
+                  } catch (e) {
+                    setResumeMessage(
+                      e instanceof Error ? e.message : 'Could not resume queue.',
+                    )
+                  } finally {
+                    setResuming(false)
+                  }
+                })()
+              }}
+            >
+              <RefreshCw className={`h-4 w-4 ${resuming ? 'animate-spin' : ''}`} aria-hidden />
+              {resuming ? 'Resuming…' : 'Resume queue'}
+            </Button>
+          ) : null}
           <Button
             variant="secondary"
             size="sm"
@@ -308,6 +357,9 @@ export function CampaignDetailPage() {
             <p className="mt-4 text-xs tabular-nums text-slate-500">
               {outcomeStats.pending.toLocaleString()} pending ({outcomeStats.pendingPct}% of audience)
             </p>
+          ) : null}
+          {resumeMessage ? (
+            <p className="mt-2 text-sm text-slate-700">{resumeMessage}</p>
           ) : null}
           <div className="mt-6">
             <div className="mb-2 flex items-center justify-between gap-2 text-sm">

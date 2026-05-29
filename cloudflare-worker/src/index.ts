@@ -491,6 +491,7 @@ function calcStatus(
 
 const AUDIENCE_PAGES_PER_CHUNK = 5;
 const AUDIENCE_PAGE_SIZE = 100;
+const RESUME_SENDS_BATCH_SIZE = 100;
 
 function isSendQueueMessage(
   msg: CampaignQueueMessage,
@@ -951,6 +952,40 @@ async function enqueuePendingCampaignPhones(env: Env, campaign: Campaign) {
   return enqueueSendMessagesForPhones(env, campaign, phones);
 }
 
+/** Re-queue pending sends in chunks so resume does not time out on large audiences. */
+async function processResumeSendsBatch(
+  env: Env,
+  msg: Extract<CampaignQueueMessage, { kind: "resume_sends" }>,
+) {
+  const campaign = await kvGetJSON<Campaign>(env.SMS_KV, key.campaign(msg.campaignId));
+  const phones = await kvGetJSON<PhoneResult[]>(env.SMS_KV, key.campaignPhones(msg.campaignId));
+  if (!campaign || campaign.deletedAt || !phones?.length) return;
+
+  let cursor = Math.max(0, msg.cursor);
+  let queued = 0;
+  while (cursor < phones.length && queued < RESUME_SENDS_BATCH_SIZE) {
+    const row = phones[cursor];
+    cursor += 1;
+    if (row.status !== "Pending") continue;
+    await enqueueSendMessage(env, {
+      campaignId: msg.campaignId,
+      phoneId: row.id,
+      phone: row.phone,
+      body: campaign.message,
+    });
+    queued += 1;
+  }
+
+  const morePending = phones.slice(cursor).some((p) => p.status === "Pending");
+  if (morePending) {
+    await env.CAMPAIGN_QUEUE.send({
+      kind: "resume_sends",
+      campaignId: msg.campaignId,
+      cursor,
+    });
+  }
+}
+
 async function releaseDueScheduledCampaigns(env: Env, limit = 25) {
   const campaigns = await listCampaigns(env);
   const due = campaigns
@@ -1000,6 +1035,7 @@ export default {
           campaigns: "/campaigns",
           campaignDetail: "/campaigns/:id",
           campaignRetryPhone: "POST /campaigns/:id/phones/:phoneId/retry",
+          campaignResume: "POST /campaigns/:id/resume",
           blastCompat: "/blast?secret=...&tag=...&msg=...&blast_id=...",
           metricsAllCompat: "/metrics/all?secret=...&limit=25",
           metricsOneCompat: "/metrics?secret=...&id=BLAST_ID",
@@ -1619,6 +1655,51 @@ export default {
         return json({ ok: true, campaign: updated });
       }
 
+      if (segments[2] === "resume" && request.method === "POST") {
+        const base = await kvGetJSON<Campaign>(env.SMS_KV, key.campaign(campaignId));
+        const phones = await kvGetJSON<PhoneResult[]>(env.SMS_KV, key.campaignPhones(campaignId));
+        if (!base || base.deletedAt || !phones) {
+          return json({ ok: false, error: "Campaign not found" }, 404);
+        }
+        if (base.status === "Preparing") {
+          return json(
+            { ok: false, error: "Audience still building. Wait until status is Running." },
+            409,
+          );
+        }
+        if (base.status === "Scheduled") {
+          return json(
+            { ok: false, error: "Campaign is scheduled. It will start automatically at send time." },
+            409,
+          );
+        }
+        if (base.status === "Completed") {
+          const pendingCount = phones.filter((p) => p.status === "Pending").length;
+          if (pendingCount === 0) {
+            return json({ ok: false, error: "Campaign already completed." }, 409);
+          }
+        }
+        const pending = phones.filter((p) => p.status === "Pending").length;
+        if (pending === 0) {
+          return json({ ok: true, queued: 0, pending: 0, message: "No pending phones to resume." });
+        }
+        if (base.status !== "Running") {
+          await kvPutJSON(env.SMS_KV, key.campaign(campaignId), { ...base, status: "Running" });
+        }
+        await env.CAMPAIGN_QUEUE.send({
+          kind: "resume_sends",
+          campaignId,
+          cursor: 0,
+        });
+        return json({
+          ok: true,
+          pending,
+          queued: pending,
+          resuming: true,
+          message: `Re-queuing ${pending} pending message(s) in background.`,
+        });
+      }
+
       if (segments[2] === "retry-failed" && request.method === "POST") {
         const base = await kvGetJSON<Campaign>(env.SMS_KV, key.campaign(campaignId));
         const phones = await kvGetJSON<PhoneResult[]>(env.SMS_KV, key.campaignPhones(campaignId));
@@ -1895,6 +1976,8 @@ export default {
         const body = message.body;
         if (body.kind === "build_audience") {
           await processAudienceBuildChunk(env, body);
+        } else if (body.kind === "resume_sends") {
+          await processResumeSendsBatch(env, body);
         } else if (isSendQueueMessage(body)) {
           await processSingleMessage(env, body);
         }

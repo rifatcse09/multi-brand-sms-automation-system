@@ -68,6 +68,7 @@ Example:
 - `POST /campaigns`
 - `GET /campaigns/:id`
 - `PATCH /campaigns/:id/important`
+- `POST /campaigns/:id/resume` (re-queue all pending phones after a queue/KV stall)
 - `POST /campaigns/:id/retry-failed`
 - `POST /campaigns/:id/phones/:phoneId/retry`
 - `DELETE /campaigns/:id`
