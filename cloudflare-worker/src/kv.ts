@@ -13,6 +13,13 @@ export const key = {
   /** Per-phone send ledger — prevents duplicate Twilio sends on queue retry/resume. */
   campaignPhoneDelivery: (campaignId: string, phoneId: string) =>
     `campaign:${campaignId}:deliver:${phoneId}`,
+  /** Normalized E.164 — one send per campaign per phone number. */
+  campaignSentPhone: (campaignId: string, normalizedPhone: string) =>
+    `campaign:${campaignId}:sentphone:${normalizedPhone.replace(/\+/g, "")}`,
+  /** Pending row update — merged into :phones in batches to avoid rewriting 200k+ per SMS. */
+  campaignPhonePatch: (campaignId: string, phoneId: string) =>
+    `campaign:${campaignId}:patch:${phoneId}`,
+  campaignPhoneDirty: (campaignId: string) => `campaign:${campaignId}:phones:dirty`,
   sidToPhone: (sid: string) => `sid:${sid}`,
   lastSentTo: (phone: string) => `lastsent:${phone}`,
   daily: (yyyyMmDd: string) => `analytics:daily:${yyyyMmDd}`,

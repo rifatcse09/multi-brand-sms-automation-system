@@ -514,7 +514,7 @@ async function enqueueSendMessagesForPhones(
 ) {
   let queued = 0;
   for (const p of phones) {
-    if (!(await shouldEnqueueCampaignSend(env, campaign.id, p.id, p.status))) continue;
+    if (!(await shouldEnqueueCampaignSend(env, campaign.id, p.id, p.phone, p.status))) continue;
     await enqueueSendMessage(env, {
       campaignId: campaign.id,
       phoneId: p.id,
@@ -793,6 +793,10 @@ async function updateDaily(env: Env, sentDelta: number, failedDelta: number) {
 }
 
 const DELIVERY_INFLIGHT_MAX_MS = 3 * 60 * 1000;
+/** Merge row patches into the full phones blob after this many sends (cuts KV writes ~40x). */
+const PHONES_FLUSH_EVERY = 40;
+/** Batch global daily analytics instead of one KV write per SMS. */
+const DAILY_STATS_FLUSH_EVERY = 30;
 
 function campaignSendIdempotencyKey(campaignId: string, phoneId: string) {
   return `${campaignId}:${phoneId}`.slice(0, 128);
@@ -818,15 +822,141 @@ async function setPhoneDelivery(
   await kvPutJSON(env.SMS_KV, key.campaignPhoneDelivery(campaignId, phoneId), delivery);
 }
 
+async function getCampaignSentPhoneRecord(
+  env: Env,
+  campaignId: string,
+  phone: string,
+): Promise<{ phoneId: string; at: string; twilioSid?: string } | null> {
+  const norm = normalizePhone(phone);
+  if (!norm) return null;
+  return kvGetJSON(env.SMS_KV, key.campaignSentPhone(campaignId, norm));
+}
+
+async function markCampaignSentPhone(
+  env: Env,
+  campaignId: string,
+  phone: string,
+  phoneId: string,
+  twilioSid?: string,
+) {
+  const norm = normalizePhone(phone);
+  if (!norm) return;
+  await kvPutJSON(env.SMS_KV, key.campaignSentPhone(campaignId, norm), {
+    phoneId,
+    at: now(),
+    twilioSid,
+  });
+}
+
+/** True if this campaign already delivered to this number (never call Twilio again). */
+async function wasAlreadySentForCampaign(
+  env: Env,
+  campaignId: string,
+  phoneId: string,
+  phone: string,
+): Promise<CampaignPhoneDelivery | null> {
+  const byId = await getPhoneDelivery(env, campaignId, phoneId);
+  if (byId?.state === "sent") return byId;
+
+  const byPhone = await getCampaignSentPhoneRecord(env, campaignId, phone);
+  if (byPhone) {
+    return {
+      state: "sent",
+      at: byPhone.at,
+      phone: normalizePhone(phone) ?? phone,
+      twilioSid: byPhone.twilioSid,
+    };
+  }
+
+  const norm = normalizePhone(phone);
+  if (norm) {
+    const last = await kvGetJSON<{ campaignId: string; phoneId: string; at: string }>(
+      env.SMS_KV,
+      key.lastSentTo(norm),
+    );
+    if (last?.campaignId === campaignId) {
+      return {
+        state: "sent",
+        at: last.at,
+        phone: norm,
+        twilioSid: undefined,
+      };
+    }
+  }
+
+  return null;
+}
+
+async function healPendingRowFromPriorSend(
+  env: Env,
+  campaign: Campaign,
+  phones: PhoneResult[],
+  idx: number,
+  prior: CampaignPhoneDelivery,
+  phoneId: string,
+  phone: string,
+): Promise<Campaign | null> {
+  if (phones[idx].status !== "Pending") return null;
+  applyDeliveryToPhoneRow(phones, idx, prior);
+  await setPhoneDelivery(env, campaign.id, phoneId, prior);
+  await markCampaignSentPhone(env, campaign.id, phone, phoneId, prior.twilioSid);
+  return recordSendOutcome(
+    env,
+    campaign,
+    { campaignId: campaign.id, phoneId, phone },
+    phones[idx],
+    { sent: 1, failed: 0 },
+    prior.twilioSid,
+  );
+}
+
+/** Mark Pending rows as Success when we already sent but KV phone list lagged — no Twilio. */
+async function reconcilePendingWithoutResend(env: Env, campaignId: string) {
+  await flushCampaignPhonePatches(env, campaignId);
+  const campaign = await kvGetJSON<Campaign>(env.SMS_KV, key.campaign(campaignId));
+  const phones = await kvGetJSON<PhoneResult[]>(env.SMS_KV, key.campaignPhones(campaignId));
+  if (!campaign || campaign.deletedAt || !phones?.length) {
+    return { healed: 0, stillPending: 0 };
+  }
+
+  let healed = 0;
+  let current = campaign;
+  for (let i = 0; i < phones.length; i += 1) {
+    if (phones[i].status !== "Pending") continue;
+    const prior = await wasAlreadySentForCampaign(env, campaignId, phones[i].id, phones[i].phone);
+    if (!prior) continue;
+    const updated = await healPendingRowFromPriorSend(
+      env,
+      current,
+      phones,
+      i,
+      prior,
+      phones[i].id,
+      phones[i].phone,
+    );
+    if (updated) {
+      healed += 1;
+      current = updated;
+    }
+  }
+
+  if (healed > 0) await flushCampaignPhonePatches(env, campaignId);
+  const phonesFresh =
+    (await kvGetJSON<PhoneResult[]>(env.SMS_KV, key.campaignPhones(campaignId))) ?? phones;
+  const stillPending = phonesFresh.filter((p) => p.status === "Pending").length;
+  return { healed, stillPending };
+}
+
 async function shouldEnqueueCampaignSend(
   env: Env,
   campaignId: string,
   phoneId: string,
+  phone: string,
   phoneStatus: PhoneStatus,
 ): Promise<boolean> {
   if (phoneStatus !== "Pending") return false;
+  if (await wasAlreadySentForCampaign(env, campaignId, phoneId, phone)) return false;
   const delivery = await getPhoneDelivery(env, campaignId, phoneId);
-  if (delivery?.state === "sent") return false;
   if (
     delivery?.state === "inflight" &&
     Date.now() - Date.parse(delivery.at) < DELIVERY_INFLIGHT_MAX_MS
@@ -834,6 +964,148 @@ async function shouldEnqueueCampaignSend(
     return false;
   }
   return true;
+}
+
+async function incrementCampaignProgress(
+  env: Env,
+  campaign: Campaign,
+  deltas: { sent: number; failed: number },
+): Promise<Campaign> {
+  const sent = campaign.sent + deltas.sent;
+  const failed = campaign.failed + deltas.failed;
+  const total = campaign.total > 0 ? campaign.total : sent + failed;
+  const queueProgress =
+    total > 0 ? Math.min(100, Math.round(((sent + failed) / total) * 100)) : 0;
+  const updated: Campaign = {
+    ...campaign,
+    sent,
+    failed,
+    queueProgress,
+    status: calcStatus(sent, failed, total, campaign.status),
+  };
+  await Promise.all([
+    kvPutJSON(env.SMS_KV, key.campaign(campaign.id), updated),
+    kvPutJSON(env.SMS_KV, key.campaignProgressSnapshot(campaign.id), {
+      processed: sent + failed,
+      at: now(),
+    }),
+  ]);
+  return updated;
+}
+
+async function bufferDailyStats(env: Env, sentDelta: number, failedDelta: number) {
+  if (sentDelta === 0 && failedDelta === 0) return;
+  const day = now().slice(0, 10);
+  const bufKey = `${key.daily(day)}:buf`;
+  const cur =
+    (await kvGetJSON<{ sent: number; failed: number }>(env.SMS_KV, bufKey)) ?? {
+      sent: 0,
+      failed: 0,
+    };
+  cur.sent += sentDelta;
+  cur.failed += failedDelta;
+  if (cur.sent + cur.failed >= DAILY_STATS_FLUSH_EVERY) {
+    await updateDaily(env, cur.sent, cur.failed);
+    await env.SMS_KV.delete(bufKey);
+  } else {
+    await kvPutJSON(env.SMS_KV, bufKey, cur);
+  }
+}
+
+async function flushBufferedDailyStats(env: Env) {
+  const day = now().slice(0, 10);
+  const bufKey = `${key.daily(day)}:buf`;
+  const cur = await kvGetJSON<{ sent: number; failed: number }>(env.SMS_KV, bufKey);
+  if (!cur || (cur.sent === 0 && cur.failed === 0)) return;
+  await updateDaily(env, cur.sent, cur.failed);
+  await env.SMS_KV.delete(bufKey);
+}
+
+/** Merge pending per-phone patches into the master phones list (one large write per batch). */
+async function flushCampaignPhonePatches(env: Env, campaignId: string): Promise<number> {
+  const dirty =
+    (await kvGetJSON<string[]>(env.SMS_KV, key.campaignPhoneDirty(campaignId))) ?? [];
+  if (dirty.length === 0) return 0;
+
+  const phones = await kvGetJSON<PhoneResult[]>(env.SMS_KV, key.campaignPhones(campaignId));
+  if (!phones?.length) {
+    await env.SMS_KV.delete(key.campaignPhoneDirty(campaignId));
+    return 0;
+  }
+
+  const patches = await Promise.all(
+    dirty.map((id) =>
+      kvGetJSON<PhoneResult>(env.SMS_KV, key.campaignPhonePatch(campaignId, id)),
+    ),
+  );
+  const byId = new Map<string, PhoneResult>();
+  dirty.forEach((id, i) => {
+    const patch = patches[i];
+    if (patch) byId.set(id, patch);
+  });
+
+  for (let i = 0; i < phones.length; i += 1) {
+    const patch = byId.get(phones[i].id);
+    if (patch) phones[i] = patch;
+  }
+
+  await kvPutJSON(env.SMS_KV, key.campaignPhones(campaignId), phones);
+  await Promise.all([
+    ...dirty.map((id) => env.SMS_KV.delete(key.campaignPhonePatch(campaignId, id))),
+    env.SMS_KV.delete(key.campaignPhoneDirty(campaignId)),
+  ]);
+  return dirty.length;
+}
+
+async function queuePhonePatch(
+  env: Env,
+  campaignId: string,
+  phoneId: string,
+  row: PhoneResult,
+): Promise<void> {
+  await kvPutJSON(env.SMS_KV, key.campaignPhonePatch(campaignId, phoneId), row);
+  const dirty =
+    (await kvGetJSON<string[]>(env.SMS_KV, key.campaignPhoneDirty(campaignId))) ?? [];
+  if (!dirty.includes(phoneId)) dirty.push(phoneId);
+  await kvPutJSON(env.SMS_KV, key.campaignPhoneDirty(campaignId), dirty);
+  if (dirty.length >= PHONES_FLUSH_EVERY) {
+    await flushCampaignPhonePatches(env, campaignId);
+  }
+}
+
+async function recordSendOutcome(
+  env: Env,
+  campaign: Campaign,
+  msg: { campaignId: string; phoneId: string; phone: string },
+  row: PhoneResult,
+  deltas: { sent: number; failed: number },
+  twilioSid?: string,
+): Promise<Campaign> {
+  const writes: Promise<void>[] = [queuePhonePatch(env, msg.campaignId, msg.phoneId, row)];
+  if (deltas.sent > 0 && twilioSid) {
+    writes.push(
+      kvPutJSON(env.SMS_KV, key.sidToPhone(twilioSid), {
+        campaignId: msg.campaignId,
+        phoneId: msg.phoneId,
+        phone: msg.phone,
+      }),
+    );
+  }
+  if (deltas.sent > 0) {
+    const norm = normalizePhone(msg.phone);
+    if (norm) {
+      writes.push(
+        kvPutJSON(env.SMS_KV, key.lastSentTo(norm), {
+          campaignId: msg.campaignId,
+          phoneId: msg.phoneId,
+          at: now(),
+        }),
+      );
+    }
+  }
+  await Promise.all(writes);
+  await bufferDailyStats(env, deltas.sent, deltas.failed);
+  return incrementCampaignProgress(env, campaign, deltas);
 }
 
 async function persistCampaignPhonesAndStats(
@@ -946,35 +1218,42 @@ async function processSingleMessage(
   msg: Extract<CampaignQueueMessage, { kind: "send" }>,
 ) {
   const campaign = await kvGetJSON<Campaign>(env.SMS_KV, key.campaign(msg.campaignId));
-  const phones = await kvGetJSON<PhoneResult[]>(env.SMS_KV, key.campaignPhones(msg.campaignId));
-  if (!campaign || !phones) return;
+  if (!campaign) return;
   if (campaign.status === "Preparing" || campaign.status === "Scheduled") return;
 
-  const idx = phones.findIndex((p) => p.id === msg.phoneId);
-  if (idx === -1) return;
-
-  const priorDelivery = await getPhoneDelivery(env, msg.campaignId, msg.phoneId);
-  if (priorDelivery?.state === "sent") {
-    if (phones[idx].status === "Pending") {
-      const wasPending = phones[idx].status === "Pending";
-      applyDeliveryToPhoneRow(phones, idx, priorDelivery);
-      await persistCampaignPhonesAndStats(env, msg.campaignId, phones, campaign, {
-        sentDelta: wasPending ? 1 : 0,
-        failedDelta: 0,
-        twilioSid: priorDelivery.twilioSid,
-        phone: msg.phone,
-        phoneId: msg.phoneId,
-      });
-    }
+  const priorSend = await wasAlreadySentForCampaign(
+    env,
+    msg.campaignId,
+    msg.phoneId,
+    msg.phone,
+  );
+  if (priorSend) {
+    const healedRow: PhoneResult = {
+      id: msg.phoneId,
+      phone: msg.phone,
+      status: "Success",
+      twilioSid: priorSend.twilioSid,
+    };
+    await setPhoneDelivery(env, msg.campaignId, msg.phoneId, priorSend);
+    await markCampaignSentPhone(env, msg.campaignId, msg.phone, msg.phoneId, priorSend.twilioSid);
+    await recordSendOutcome(
+      env,
+      campaign,
+      msg,
+      healedRow,
+      { sent: 1, failed: 0 },
+      priorSend.twilioSid,
+    );
     return;
   }
+
+  const priorDelivery = await getPhoneDelivery(env, msg.campaignId, msg.phoneId);
   if (
     priorDelivery?.state === "inflight" &&
     Date.now() - Date.parse(priorDelivery.at) < DELIVERY_INFLIGHT_MAX_MS
   ) {
     return;
   }
-  if (phones[idx].status !== "Pending") return;
 
   await setPhoneDelivery(env, msg.campaignId, msg.phoneId, {
     state: "inflight",
@@ -1037,6 +1316,7 @@ async function processSingleMessage(
       phone: msg.phone,
       twilioSid,
     });
+    await markCampaignSentPhone(env, msg.campaignId, msg.phone, msg.phoneId, twilioSid);
   } else {
     await setPhoneDelivery(env, msg.campaignId, msg.phoneId, {
       state: "failed",
@@ -1046,19 +1326,17 @@ async function processSingleMessage(
     });
   }
 
-  phones[idx] =
+  const row: PhoneResult =
     status === "Success"
       ? {
-          ...phones[idx],
+          id: msg.phoneId,
+          phone: msg.phone,
           status,
-          error: undefined,
           twilioSid,
-          failedAt: undefined,
-          failureSource: undefined,
-          failureDetail: undefined,
         }
       : {
-          ...phones[idx],
+          id: msg.phoneId,
+          phone: msg.phone,
           status,
           error,
           twilioSid,
@@ -1067,13 +1345,14 @@ async function processSingleMessage(
           failureDetail,
         };
 
-  await persistCampaignPhonesAndStats(env, msg.campaignId, phones, campaign, {
-    sentDelta: status === "Success" ? 1 : 0,
-    failedDelta: status === "Failed" ? 1 : 0,
+  await recordSendOutcome(
+    env,
+    campaign,
+    msg,
+    row,
+    { sent: status === "Success" ? 1 : 0, failed: status === "Failed" ? 1 : 0 },
     twilioSid,
-    phone: msg.phone,
-    phoneId: msg.phoneId,
-  });
+  );
 
   if (status === "Success") {
     void missiveShadowLog(
@@ -1113,7 +1392,9 @@ async function processResumeSendsBatch(
   while (cursor < phones.length && queued < RESUME_SENDS_BATCH_SIZE) {
     const row = phones[cursor];
     cursor += 1;
-    if (!(await shouldEnqueueCampaignSend(env, msg.campaignId, row.id, row.status))) continue;
+    if (!(await shouldEnqueueCampaignSend(env, msg.campaignId, row.id, row.phone, row.status))) {
+      continue;
+    }
     await enqueueSendMessage(env, {
       campaignId: msg.campaignId,
       phoneId: row.id,
@@ -1151,7 +1432,14 @@ async function maybeResumeStuckRunningCampaigns(env: Env) {
       null;
     if (throttle && Date.now() - Date.parse(throttle.at) < RESUME_THROTTLE_MS) continue;
 
-    const processed = c.sent + c.failed;
+    await reconcilePendingWithoutResend(env, c.id);
+    const phonesAfter = await kvGetJSON<PhoneResult[]>(env.SMS_KV, key.campaignPhones(c.id));
+    const pendingAfter = (phonesAfter ?? []).filter((p) => p.status === "Pending").length;
+    if (pendingAfter === 0) continue;
+
+    const fresh = await kvGetJSON<Campaign>(env.SMS_KV, key.campaign(c.id));
+    if (!fresh) continue;
+    const processed = fresh.sent + fresh.failed;
     const snap =
       (await kvGetJSON<{ processed: number; at: string }>(
         env.SMS_KV,
@@ -1229,6 +1517,7 @@ export default {
           campaignDetail: "/campaigns/:id",
           campaignRetryPhone: "POST /campaigns/:id/phones/:phoneId/retry",
           campaignResume: "POST /campaigns/:id/resume",
+          campaignReconcile: "POST /campaigns/:id/reconcile",
           blastCompat: "/blast?secret=...&tag=...&msg=...&blast_id=...",
           metricsAllCompat: "/metrics/all?secret=...&limit=25",
           metricsOneCompat: "/metrics?secret=...&id=BLAST_ID",
@@ -1825,6 +2114,7 @@ export default {
 
       if (segments.length === 2 && request.method === "GET") {
         await releaseDueScheduledCampaigns(env, 10);
+        await flushCampaignPhonePatches(env, campaignId);
         const base = await kvGetJSON<Campaign>(env.SMS_KV, key.campaign(campaignId));
         if (!base || base.deletedAt) return json({ ok: false, error: "Campaign not found" }, 404);
         const phones = (await kvGetJSON<PhoneResult[]>(env.SMS_KV, key.campaignPhones(campaignId))) ?? [];
@@ -1874,6 +2164,15 @@ export default {
         return json({ ok: true, campaign: updated });
       }
 
+      if (segments[2] === "reconcile" && request.method === "POST") {
+        const base = await kvGetJSON<Campaign>(env.SMS_KV, key.campaign(campaignId));
+        if (!base || base.deletedAt) {
+          return json({ ok: false, error: "Campaign not found" }, 404);
+        }
+        const result = await reconcilePendingWithoutResend(env, campaignId);
+        return json({ ok: true, ...result });
+      }
+
       if (segments[2] === "resume" && request.method === "POST") {
         const base = await kvGetJSON<Campaign>(env.SMS_KV, key.campaign(campaignId));
         const phones = await kvGetJSON<PhoneResult[]>(env.SMS_KV, key.campaignPhones(campaignId));
@@ -1898,9 +2197,18 @@ export default {
             return json({ ok: false, error: "Campaign already completed." }, 409);
           }
         }
-        const pending = phones.filter((p) => p.status === "Pending").length;
-        if (pending === 0) {
-          return json({ ok: true, queued: 0, pending: 0, message: "No pending phones to resume." });
+        const { healed, stillPending } = await reconcilePendingWithoutResend(env, campaignId);
+        if (stillPending === 0) {
+          return json({
+            ok: true,
+            queued: 0,
+            pending: 0,
+            healed,
+            message:
+              healed > 0
+                ? `Healed ${healed} row(s) from prior sends (no duplicate SMS).`
+                : "No pending phones to resume.",
+          });
         }
         if (base.status !== "Running") {
           await kvPutJSON(env.SMS_KV, key.campaign(campaignId), { ...base, status: "Running" });
@@ -1912,10 +2220,14 @@ export default {
         });
         return json({
           ok: true,
-          pending,
-          queued: pending,
+          pending: stillPending,
+          queued: stillPending,
+          healed,
           resuming: true,
-          message: `Re-queuing ${pending} pending message(s) in background.`,
+          message:
+            healed > 0
+              ? `Healed ${healed} without resending. Queuing ${stillPending} remaining.`
+              : `Queuing ${stillPending} pending message(s) (no duplicate sends).`,
         });
       }
 
@@ -1932,6 +2244,8 @@ export default {
           phone.failedAt = undefined;
           phone.twilioSid = undefined;
           await env.SMS_KV.delete(key.campaignPhoneDelivery(campaignId, phone.id));
+          const norm = normalizePhone(phone.phone);
+          if (norm) await env.SMS_KV.delete(key.campaignSentPhone(campaignId, norm));
           await enqueueSendMessage(env, {
             campaignId,
             phoneId: phone.id,
@@ -1968,6 +2282,8 @@ export default {
           twilioSid: undefined,
         };
         await env.SMS_KV.delete(key.campaignPhoneDelivery(campaignId, phoneId));
+        const norm = normalizePhone(phones[idx].phone);
+        if (norm) await env.SMS_KV.delete(key.campaignSentPhone(campaignId, norm));
         await enqueueSendMessage(env, {
           campaignId,
           phoneId: phones[idx].id,
@@ -2231,6 +2547,13 @@ export default {
       }
     }
     await releaseDueScheduledCampaigns(env, 100);
+    await flushBufferedDailyStats(env);
+    const campaigns = await listCampaigns(env);
+    for (const c of campaigns) {
+      if (c.status !== "Running" && c.status !== "Paused") continue;
+      const dirty = await kvGetJSON<string[]>(env.SMS_KV, key.campaignPhoneDirty(c.id));
+      if (dirty?.length) await flushCampaignPhonePatches(env, c.id);
+    }
     await maybeResumeStuckRunningCampaigns(env);
   },
 };
