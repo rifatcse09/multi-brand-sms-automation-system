@@ -476,6 +476,28 @@ export async function resumeWorkerCampaign(campaignId: string) {
   }
 }
 
+export type WorkerCampaignProgress = {
+  id: string
+  status: CampaignStatus
+  total: number
+  sent: number
+  failed: number
+  pending: number
+  queueProgress: number
+}
+
+export async function fetchWorkerCampaignProgress(id: string) {
+  const payload = (await requestJson(`/campaigns/${id}/progress`)) as {
+    ok?: boolean
+    progress?: WorkerCampaignProgress
+    error?: string
+  }
+  if (!payload.ok || !payload.progress) {
+    throw new Error(typeof payload.error === 'string' ? payload.error : 'Progress fetch failed')
+  }
+  return payload.progress
+}
+
 export async function fetchWorkerCampaignById(id: string) {
   const payload = (await requestJson(`/campaigns/${id}`)) as {
     ok?: boolean

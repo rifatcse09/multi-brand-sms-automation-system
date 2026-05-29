@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft, RefreshCw, ScrollText, Trash2 } from 'lucide-react'
 import { Card, CardHeader } from '../components/ui/Card'
@@ -10,10 +10,16 @@ import { StatusBadge } from '../components/ui/Badge'
 import { useAppData } from '../context/AppDataContext'
 import {
   fetchWorkerCampaignById,
+  fetchWorkerCampaignProgress,
   isWorkerConfigured,
   resumeWorkerCampaign,
 } from '../services/smsWorkerApi'
 import type { Campaign, PhoneResult } from '../types'
+
+function processedCount(c: Campaign | null | undefined) {
+  if (!c) return 0
+  return (c.sent ?? 0) + (c.failed ?? 0)
+}
 
 function failureSourceLabel(source?: string) {
   switch (source) {
@@ -86,31 +92,62 @@ export function CampaignDetailPage() {
   const [failureLogPhone, setFailureLogPhone] = useState<PhoneResult | null>(null)
   const [resuming, setResuming] = useState(false)
   const [resumeMessage, setResumeMessage] = useState<string | null>(null)
+  const [statsUpdatedAt, setStatsUpdatedAt] = useState<number | null>(null)
 
-  const reloadRemoteCampaign = async () => {
+  const reloadRemoteCampaign = useCallback(async () => {
     if (!id || !isWorkerConfigured()) return
-    const res = await fetchWorkerCampaignById(id)
-    setRemoteCampaign(res.campaign as Campaign)
-  }
+    try {
+      const res = await fetchWorkerCampaignById(id)
+      setRemoteCampaign(res.campaign as Campaign)
+      setStatsUpdatedAt(Date.now())
+    } catch {
+      setRemoteCampaign(null)
+    }
+  }, [id])
+
+  const refreshCampaignProgress = useCallback(async () => {
+    if (!id || !isWorkerConfigured()) return
+    try {
+      const p = await fetchWorkerCampaignProgress(id)
+      setRemoteCampaign((prev) =>
+        prev
+          ? {
+              ...prev,
+              sent: p.sent,
+              failed: p.failed,
+              status: p.status,
+              total: p.total || prev.total,
+              queueProgress: p.queueProgress,
+            }
+          : null,
+      )
+      setStatsUpdatedAt(Date.now())
+    } catch {
+      /* keep last snapshot */
+    }
+  }, [id])
 
   useEffect(() => {
     if (!id || !isWorkerConfigured()) return
     let cancelled = false
     setLoadingRemote(true)
     void (async () => {
-      try {
-        const res = await fetchWorkerCampaignById(id)
-        if (!cancelled) setRemoteCampaign(res.campaign as Campaign)
-      } catch {
-        if (!cancelled) setRemoteCampaign(null)
-      } finally {
-        if (!cancelled) setLoadingRemote(false)
-      }
+      await reloadRemoteCampaign()
+      if (!cancelled) await refreshCampaignProgress()
+      if (!cancelled) setLoadingRemote(false)
     })()
+    const progressTimer = window.setInterval(() => {
+      void refreshCampaignProgress()
+    }, 8_000)
+    const fullTimer = window.setInterval(() => {
+      void reloadRemoteCampaign()
+    }, 60_000)
     return () => {
       cancelled = true
+      window.clearInterval(progressTimer)
+      window.clearInterval(fullTimer)
     }
-  }, [id])
+  }, [id, reloadRemoteCampaign, refreshCampaignProgress])
 
   const activeCampaign = useMemo<Campaign | null>(() => {
     if (!id) return null
@@ -120,19 +157,27 @@ export function CampaignDetailPage() {
     if (remote && local) {
       const localPhones = local.phones ?? []
       const remotePhones = remote.phones ?? []
-      const useLocalDetail = localPhones.length > 0
-      const phones = useLocalDetail ? localPhones : remotePhones
-      const metrics = useLocalDetail ? local : remote
+      const phones = remotePhones.length > 0 ? remotePhones : localPhones
+      const localProcessed = processedCount(local)
+      const remoteProcessed = processedCount(remote)
+      const metrics = localProcessed >= remoteProcessed ? local : remote
+      const queueProgress = Math.max(
+        local.queueProgress ?? 0,
+        remote.queueProgress ?? 0,
+        metrics.total > 0
+          ? Math.round((processedCount(metrics) / metrics.total) * 100)
+          : 0,
+      )
       return {
         ...remote,
         ...local,
         phones,
-        batches: metrics.batches ?? [],
+        batches: metrics.batches ?? remote.batches ?? [],
         sent: metrics.sent,
         failed: metrics.failed,
-        queueProgress: metrics.queueProgress,
-        status: metrics.status,
-        total: metrics.total,
+        queueProgress,
+        status: metrics.status ?? remote.status,
+        total: metrics.total || remote.total,
         important: local.important,
       }
     }
@@ -148,9 +193,11 @@ export function CampaignDetailPage() {
     if (!activeCampaign) return null
     const phones = activeCampaign.phones ?? []
     const total = activeCampaign.total > 0 ? activeCampaign.total : phones.length
-    const sent = phones.filter((p) => p.status === 'Success').length
-    const failed = phones.filter((p) => p.status === 'Failed').length
-    const pending = phones.filter((p) => p.status === 'Pending').length
+    const sentFromPhones = phones.filter((p) => p.status === 'Success').length
+    const failedFromPhones = phones.filter((p) => p.status === 'Failed').length
+    const sent = Math.max(sentFromPhones, activeCampaign.sent ?? 0)
+    const failed = Math.max(failedFromPhones, activeCampaign.failed ?? 0)
+    const pending = Math.max(0, total - sent - failed)
     const resolved = sent + failed
     const pctOf = (n: number) => (total > 0 ? Math.round((n / total) * 1000) / 10 : 0)
     const failureRate = resolved > 0 ? Math.round((failed / resolved) * 1000) / 10 : pctOf(failed)
@@ -251,6 +298,7 @@ export function CampaignDetailPage() {
                           : 'No pending messages were re-queued.'),
                     )
                     await reloadRemoteCampaign()
+                    await refreshCampaignProgress()
                   } catch (e) {
                     setResumeMessage(
                       e instanceof Error ? e.message : 'Could not resume queue.',
@@ -279,7 +327,17 @@ export function CampaignDetailPage() {
 
       <div className="grid gap-4 lg:grid-cols-3">
         <Card padding="md" className="lg:col-span-2">
-          <CardHeader title="Overview" description="High-level delivery metrics for this send." />
+          <CardHeader
+            title="Overview"
+            description={
+              statsUpdatedAt
+                ? `High-level delivery metrics · live stats updated ${Math.max(
+                    0,
+                    Math.round((Date.now() - statsUpdatedAt) / 1000),
+                  )}s ago`
+                : 'High-level delivery metrics for this send.'
+            }
+          />
           {activeCampaign.status === 'Preparing' ? (
             <p className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
               Building audience from ActiveCampaign in the background. Total will climb,

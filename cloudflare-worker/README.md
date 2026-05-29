@@ -67,8 +67,9 @@ Example:
 - `GET /campaigns?brand=&status=&important=`
 - `POST /campaigns`
 - `GET /campaigns/:id`
+- `GET /campaigns/:id/progress` (lightweight sent/failed/queue for live polling)
 - `PATCH /campaigns/:id/important`
-- `POST /campaigns/:id/resume` (re-queue all pending phones after a queue/KV stall)
+- `POST /campaigns/:id/resume` (re-queue pending phones after a queue/KV stall; skips numbers already in the delivery ledger)
 - `POST /campaigns/:id/retry-failed`
 - `POST /campaigns/:id/phones/:phoneId/retry`
 - `DELETE /campaigns/:id`

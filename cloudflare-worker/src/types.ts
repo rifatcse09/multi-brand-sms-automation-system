@@ -1,6 +1,14 @@
 export type CampaignStatus = "Running" | "Completed" | "Paused" | "Scheduled" | "Preparing";
 export type PhoneStatus = "Pending" | "Success" | "Failed";
 
+export type CampaignPhoneDelivery = {
+  state: "inflight" | "sent" | "failed";
+  at: string;
+  phone: string;
+  twilioSid?: string;
+  error?: string;
+};
+
 export interface KVNamespace {
   get(key: string): Promise<string | null>;
   put(key: string, value: string): Promise<void>;

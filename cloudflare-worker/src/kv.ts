@@ -8,6 +8,11 @@ export const key = {
   campaign: (id: string) => `campaign:${id}`,
   campaignPhones: (id: string) => `campaign:${id}:phones`,
   campaignMeta: (id: string) => `campaign:${id}:meta`,
+  campaignProgressSnapshot: (id: string) => `campaign:${id}:progress:snapshot`,
+  campaignResumeThrottle: (id: string) => `campaign:${id}:resume:throttle`,
+  /** Per-phone send ledger — prevents duplicate Twilio sends on queue retry/resume. */
+  campaignPhoneDelivery: (campaignId: string, phoneId: string) =>
+    `campaign:${campaignId}:deliver:${phoneId}`,
   sidToPhone: (sid: string) => `sid:${sid}`,
   lastSentTo: (phone: string) => `lastsent:${phone}`,
   daily: (yyyyMmDd: string) => `analytics:daily:${yyyyMmDd}`,
