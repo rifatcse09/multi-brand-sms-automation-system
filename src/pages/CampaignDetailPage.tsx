@@ -182,8 +182,16 @@ export function CampaignDetailPage() {
     )
   }
 
-  const pct =
+  const sentOnlyPct =
     activeCampaign.total > 0 ? Math.round((activeCampaign.sent / activeCampaign.total) * 100) : 0
+  const processedPct =
+    outcomeStats.total > 0
+      ? Math.round(((outcomeStats.sent + outcomeStats.failed) / outcomeStats.total) * 100)
+      : activeCampaign.queueProgress
+  const queueDisplayPct =
+    activeCampaign.status === 'Running' || activeCampaign.status === 'Preparing'
+      ? Math.max(activeCampaign.queueProgress, processedPct)
+      : sentOnlyPct
   const scheduledLabel =
     activeCampaign.scheduleAtLocal && activeCampaign.scheduleTimezone
       ? `${activeCampaign.scheduleAtLocal.replace('T', ' ')} (${activeCampaign.scheduleTimezone})`
@@ -364,15 +372,9 @@ export function CampaignDetailPage() {
           <div className="mt-6">
             <div className="mb-2 flex items-center justify-between gap-2 text-sm">
               <span className="font-medium text-slate-700">Queue processing</span>
-              <span className="tabular-nums text-slate-500">{pct}%</span>
+              <span className="tabular-nums text-slate-500">{queueDisplayPct}%</span>
             </div>
-            <ProgressBar
-              value={
-                activeCampaign.status === 'Running' || activeCampaign.status === 'Preparing'
-                  ? activeCampaign.queueProgress
-                  : pct
-              }
-            />
+            <ProgressBar value={queueDisplayPct} />
           </div>
         </Card>
 
