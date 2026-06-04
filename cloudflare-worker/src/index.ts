@@ -1414,8 +1414,10 @@ async function processResumeSendsBatch(
   }
 }
 
-const STUCK_PROGRESS_MS = 3 * 60 * 1000;
-const RESUME_THROTTLE_MS = 3 * 60 * 1000;
+const STUCK_PROGRESS_MS = 2 * 60 * 1000;
+const RESUME_THROTTLE_MS = 2 * 60 * 1000;
+/** Re-kick build_audience if a campaign stays Preparing for longer than this. */
+const STUCK_PREPARING_MS = 10 * 60 * 1000;
 
 /** Re-queue pending phones when a Running campaign has had no progress for several minutes. */
 async function maybeResumeStuckRunningCampaigns(env: Env) {
@@ -1467,6 +1469,32 @@ async function maybeResumeStuckRunningCampaigns(env: Env) {
   }
 }
 
+/** Re-send a build_audience message when a campaign stays Preparing for too long (dropped message). */
+async function maybeRestartStuckPreparingCampaigns(env: Env) {
+  const campaigns = await listCampaigns(env);
+  for (const c of campaigns) {
+    if (c.status !== "Preparing") continue;
+    const createdMs = Date.parse(c.createdAt);
+    if (!Number.isFinite(createdMs)) continue;
+    if (Date.now() - createdMs < STUCK_PREPARING_MS) continue;
+
+    const throttleKey = key.campaignResumeThrottle(c.id) + ":preparing";
+    const throttle = await kvGetJSON<{ at: string }>(env.SMS_KV, throttleKey);
+    if (throttle && Date.now() - Date.parse(throttle.at) < STUCK_PREPARING_MS) continue;
+
+    const phones =
+      (await kvGetJSON<PhoneResult[]>(env.SMS_KV, key.campaignPhones(c.id))) ?? [];
+    const existingTotal = phones.length;
+
+    await startCampaignAudienceBuild(env, c.id, c.brandId, c.tag);
+    await kvPutJSON(env.SMS_KV, throttleKey, { at: now() });
+
+    if (existingTotal > 0) {
+      await env.CAMPAIGN_QUEUE.send({ kind: "resume_sends", campaignId: c.id, cursor: 0 });
+    }
+  }
+}
+
 async function releaseDueScheduledCampaigns(env: Env, limit = 25) {
   const campaigns = await listCampaigns(env);
   const due = campaigns
@@ -1513,6 +1541,7 @@ export default {
           brandAcTags: "GET /brands/:id/activecampaign/tags",
           brandTagSubscribers: "GET /brands/:id/subscribers?tag=TAG_NAME",
           brandTagSubscribersWarmup: "POST /brands/:id/subscribers/warmup",
+          brandTwilioPricing: "GET /brands/:id/twilio-pricing?country=US",
           campaigns: "/campaigns",
           campaignDetail: "/campaigns/:id",
           campaignRetryPhone: "POST /campaigns/:id/phones/:phoneId/retry",
@@ -1965,6 +1994,64 @@ export default {
           },
           cached: hadCache && !shouldRefresh,
         });
+      }
+
+      if (url.pathname.endsWith("/twilio-pricing") && request.method === "GET") {
+        if (!existing.twilioAccountSid || !existing.twilioAuthToken) {
+          return json({ ok: false, error: "Twilio credentials not configured for this brand." }, 400);
+        }
+        const country = (url.searchParams.get("country") || "US").toUpperCase().slice(0, 4);
+        try {
+          const pricingRes = await fetch(
+            `https://pricing.twilio.com/v1/Messaging/Countries/${encodeURIComponent(country)}`,
+            {
+              headers: {
+                Authorization: `Basic ${btoa(`${existing.twilioAccountSid}:${existing.twilioAuthToken}`)}`,
+              },
+            },
+          );
+          if (!pricingRes.ok) {
+            const txt = await pricingRes.text().catch(() => "");
+            return json(
+              { ok: false, error: `Twilio Pricing API returned ${pricingRes.status}${txt ? `: ${txt.slice(0, 200)}` : ""}` },
+              502,
+            );
+          }
+          const data = (await pricingRes.json()) as {
+            price_unit?: string;
+            outbound_sms_prices?: Array<{
+              carrier?: string;
+              prices?: Array<{ number_type?: string; current_price?: string; base_price?: string }>;
+            }>;
+          };
+          const prices: number[] = [];
+          for (const carrier of data.outbound_sms_prices ?? []) {
+            for (const p of carrier.prices ?? []) {
+              if (p.number_type === "local" || p.number_type === "mobile" || p.number_type === "shortcode") {
+                const val = parseFloat(p.current_price ?? p.base_price ?? "");
+                if (Number.isFinite(val) && val > 0) prices.push(val);
+              }
+            }
+          }
+          const avgPrice =
+            prices.length > 0 ? prices.reduce((a, b) => a + b, 0) / prices.length : null;
+          const minPrice = prices.length > 0 ? Math.min(...prices) : null;
+          const maxPrice = prices.length > 0 ? Math.max(...prices) : null;
+          return json({
+            ok: true,
+            country,
+            priceUnit: data.price_unit ?? "USD",
+            averagePrice: avgPrice,
+            minPrice,
+            maxPrice,
+            carrierCount: prices.length,
+          });
+        } catch (e) {
+          return json(
+            { ok: false, error: e instanceof Error ? e.message : "Pricing fetch failed" },
+            502,
+          );
+        }
       }
 
       if (request.method === "PUT") {
@@ -2555,5 +2642,6 @@ export default {
       if (dirty?.length) await flushCampaignPhonePatches(env, c.id);
     }
     await maybeResumeStuckRunningCampaigns(env);
+    await maybeRestartStuckPreparingCampaigns(env);
   },
 };

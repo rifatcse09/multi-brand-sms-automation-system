@@ -2,11 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { ArrowUpRight, RefreshCw } from 'lucide-react'
 import { Card, CardHeader } from '../components/ui/Card'
-import { ProgressBar } from '../components/ui/ProgressBar'
 import { Button } from '../components/ui/Button'
 import { Select } from '../components/ui/Select'
 import { Skeleton } from '../components/ui/Skeleton'
-import { StatusBadge } from '../components/ui/Badge'
 import { useAppData } from '../context/AppDataContext'
 import { useDelayedReady } from '../hooks/useDelayedReady'
 import { type WorkerSubscriberBrand } from '../services/smsWorkerApi'
@@ -277,49 +275,6 @@ export function DashboardHome() {
 
   const [refreshingBrandIds, setRefreshingBrandIds] = useState<Set<string>>(new Set())
 
-  const totals = useMemo(
-    () =>
-      campaigns.reduce(
-        (acc, c) => {
-          acc.campaigns += 1
-          acc.sent += c.sent
-          acc.failed += c.failed
-          if (c.status === 'Running') acc.active += 1
-          return acc
-        },
-        { campaigns: 0, sent: 0, failed: 0, active: 0 },
-      ),
-    [campaigns],
-  )
-
-  const filteredCampaigns = useMemo(
-    () =>
-      selectedBrandId === ALL_BRANDS
-        ? campaigns
-        : campaigns.filter((c) => c.brandId === selectedBrandId),
-    [campaigns, selectedBrandId],
-  )
-
-  const filteredTotals = useMemo(
-    () =>
-      filteredCampaigns.reduce(
-        (acc, c) => {
-          acc.campaigns += 1
-          acc.sent += c.sent
-          acc.failed += c.failed
-          if (c.status === 'Running') acc.active += 1
-          return acc
-        },
-        { campaigns: 0, sent: 0, failed: 0, active: 0 },
-      ),
-    [filteredCampaigns],
-  )
-
-  const running = useMemo(
-    () => filteredCampaigns.filter((c) => c.status === 'Running'),
-    [filteredCampaigns],
-  )
-
   const brandSummaries = useMemo<BrandStat[]>(
     () =>
       brands
@@ -354,38 +309,6 @@ export function DashboardHome() {
       : brandSummaries.filter((b) => b.id === selectedBrandId)
 
   const isAllBrands = selectedBrandId === ALL_BRANDS
-
-  const statTotals = isAllBrands ? totals : filteredTotals
-  const statCards = [
-    {
-      label: 'Total campaigns',
-      value: statTotals.campaigns,
-      cardClass: 'border-violet-200 bg-violet-50/80',
-      labelClass: 'text-violet-700',
-      valueClass: 'text-violet-950',
-    },
-    {
-      label: 'Total sent',
-      value: statTotals.sent.toLocaleString(),
-      cardClass: 'border-emerald-200 bg-emerald-50/80',
-      labelClass: 'text-emerald-700',
-      valueClass: 'text-emerald-950',
-    },
-    {
-      label: 'Total failed',
-      value: statTotals.failed.toLocaleString(),
-      cardClass: 'border-rose-200 bg-rose-50/80',
-      labelClass: 'text-rose-700',
-      valueClass: 'text-rose-950',
-    },
-    {
-      label: 'Active campaigns',
-      value: statTotals.active,
-      cardClass: 'border-sky-200 bg-sky-50/80',
-      labelClass: 'text-sky-700',
-      valueClass: 'text-sky-950',
-    },
-  ]
 
   useEffect(() => {
     if (selectedBrandId === ALL_BRANDS) return
@@ -461,98 +384,6 @@ export function DashboardHome() {
           </Select>
         </div>
       </div>
-
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        {statCards.map((s) => (
-          <Card
-            key={s.label}
-            padding="md"
-            className={`border ${s.cardClass} transition-shadow hover:shadow-md`}
-          >
-            {!ready ? (
-              <div className="space-y-3">
-                <Skeleton className="h-3 w-24" />
-                <Skeleton className="h-8 w-16" />
-              </div>
-            ) : (
-              <>
-                <p
-                  className={`font-serif text-xs font-semibold uppercase tracking-wider ${s.labelClass}`}
-                >
-                  {s.label}
-                </p>
-                <p
-                  className={`mt-2 font-mono text-4xl font-bold leading-none tracking-tight ${s.valueClass}`}
-                >
-                  {s.value}
-                </p>
-              </>
-            )}
-          </Card>
-        ))}
-      </div>
-
-      {ready && running.length > 0 ? (
-        <Card padding="md">
-          <CardHeader
-            title="Running campaigns"
-            description={
-              isAllBrands
-                ? 'Live queue progress for active sends.'
-                : `Live queue progress for ${getBrandName(selectedBrandId)}.`
-            }
-          />
-          <div className="space-y-4">
-            {running.map((c) => (
-              <div key={c.id} className="rounded-lg border border-slate-100 bg-slate-50/50 p-4">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <p className="text-sm font-medium text-slate-900">{c.name}</p>
-                    <p className="text-xs text-slate-500">{getBrandName(c.brandId)}</p>
-                  </div>
-                  <StatusBadge status={c.status} />
-                </div>
-                <div className="mt-3">
-                  <ProgressBar value={c.queueProgress} />
-                  <p className="mt-1.5 text-xs text-slate-500">
-                    {c.sent.toLocaleString()} / {c.total.toLocaleString()} sent ·{' '}
-                    {c.queueProgress}% complete
-                  </p>
-                </div>
-              </div>
-            ))}
-          </div>
-        </Card>
-      ) : null}
-
-      {isAllBrands ? (
-        <div className="grid gap-3 sm:grid-cols-3">
-          <Card padding="md" className="border border-slate-200 bg-slate-50/80">
-            <p className="font-serif text-xs font-semibold uppercase tracking-wider text-slate-600">
-              Brands
-            </p>
-            <p className="mt-2 font-mono text-4xl font-bold leading-none text-slate-900">
-              {brandSummaries.length}
-            </p>
-          </Card>
-          <Card padding="md" className="border border-emerald-200 bg-emerald-50/80">
-            <p className="font-serif text-xs font-semibold uppercase tracking-wider text-emerald-700">
-              Sent
-            </p>
-            <p className="mt-2 font-mono text-4xl font-bold leading-none text-emerald-950">
-              {totals.sent.toLocaleString()}
-            </p>
-          </Card>
-          <Card padding="md" className="border border-rose-200 bg-rose-50/80">
-            <p className="font-serif text-xs font-semibold uppercase tracking-wider text-rose-700">
-              Failed
-            </p>
-            <p className="mt-2 font-mono text-4xl font-bold leading-none text-rose-950">
-              {totals.failed.toLocaleString()}
-            </p>
-          </Card>
-        </div>
-      ) : null}
 
       <Card padding="md">
         <CardHeader

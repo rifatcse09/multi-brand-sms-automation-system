@@ -205,6 +205,18 @@ export function CreateCampaignPage() {
     return tagAudience
   }, [tagAudience, matchesDashboardCache, dashboardAudience])
 
+  const segmentCount = useMemo(() => {
+    const len = message.length
+    if (len === 0) return 1
+    return Math.ceil(len / 160)
+  }, [message])
+
+  const estimatedCost = useMemo(() => {
+    const rate = brandRow?.smsCostPerSegment
+    if (!rate || !resolvedTagAudience) return null
+    return resolvedTagAudience.totalSubscribers * segmentCount * rate
+  }, [brandRow, resolvedTagAudience, segmentCount])
+
   const showingTagAudience =
     Boolean(tagTrim) &&
     !resolvedTagAudience &&
@@ -350,6 +362,27 @@ export function CreateCampaignPage() {
                         </span>
                       ) : null}
                     </p>
+                    {estimatedCost != null ? (
+                      <div className="rounded-md border border-violet-200 bg-white/70 px-2.5 py-2">
+                        <p className="text-xs font-semibold uppercase tracking-wider text-violet-700">
+                          Estimated cost
+                        </p>
+                        <p className="mt-0.5 text-sm font-semibold text-slate-900">
+                          ${estimatedCost.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </p>
+                        <p className="mt-0.5 text-xs text-slate-500">
+                          {resolvedTagAudience.totalSubscribers.toLocaleString()} recipients
+                          {' × '}
+                          {segmentCount} {segmentCount === 1 ? 'segment' : 'segments'}
+                          {' × '}
+                          ${brandRow!.smsCostPerSegment!.toFixed(4)}/segment
+                        </p>
+                      </div>
+                    ) : brandRow && !brandRow.smsCostPerSegment ? (
+                      <p className="text-xs text-slate-400">
+                        Set a cost-per-segment in Brand settings to see an estimate here.
+                      </p>
+                    ) : null}
                     <p className="text-xs text-slate-600">
                       Campaign will send to all SMS-capable contacts with this tag.
                       {matchesDashboardCache ? ' Using dashboard cache.' : ' Loaded from tag cache.'}
@@ -385,10 +418,18 @@ export function CreateCampaignPage() {
                   'Hi {{first_name}}, thanks for being a customer. Reply STOP to opt out.'
                 }
               />
-              <p className="mt-1.5 text-xs text-slate-500">
-                Merge fields like <span className="font-mono">{'{{first_name}}'}</span> are
-                supported in the real product; here they are display-only.
-              </p>
+              <div className="mt-1.5 flex items-baseline justify-between gap-2">
+                <p className="text-xs text-slate-500">
+                  Merge fields like <span className="font-mono">{'{{first_name}}'}</span> are
+                  supported in the real product; here they are display-only.
+                </p>
+                <p className={`shrink-0 whitespace-nowrap text-xs tabular-nums ${
+                  message.length > 160 ? 'font-medium text-amber-600' : 'text-slate-400'
+                }`}>
+                  {message.length} / 160
+                  {message.length > 160 ? ` · ${Math.ceil(message.length / 160)} SMS` : ''}
+                </p>
+              </div>
             </div>
             <div className="space-y-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
               <label className="flex items-center gap-2 text-sm font-medium text-slate-800">

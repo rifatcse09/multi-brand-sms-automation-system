@@ -24,6 +24,14 @@ export interface Batch {
   progress: number
 }
 
+export interface CampaignCounters {
+  clicks: number
+  replies: number
+  unsubs: number
+  delivered: number
+  deliveryFailed: number
+}
+
 export interface Campaign {
   id: string
   name: string
@@ -45,6 +53,8 @@ export interface Campaign {
   scheduledAtUtc?: string
   scheduleTimezone?: string
   scheduleAtLocal?: string
+  /** Engagement counters from Twilio webhooks (delivery, clicks, replies, unsubs) */
+  counters?: CampaignCounters
 }
 
 export interface Brand {
@@ -58,4 +68,6 @@ export interface Brand {
   activeCampaignApiKey: string
   /** ActiveCampaign tag for dashboard audience + default campaign tag. */
   dashboardTag?: string
+  /** Cost charged per SMS segment (in USD). Used for pre-send cost estimates. */
+  smsCostPerSegment?: number
 }

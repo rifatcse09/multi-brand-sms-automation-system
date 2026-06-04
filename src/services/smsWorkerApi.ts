@@ -523,3 +523,23 @@ export async function deleteWorkerCampaign(id: string) {
   })
   return payload as { ok: true; campaign: Campaign }
 }
+
+export type WorkerTwilioPricing = {
+  country: string
+  priceUnit: string
+  averagePrice: number | null
+  minPrice: number | null
+  maxPrice: number | null
+  carrierCount: number
+}
+
+export async function fetchWorkerBrandTwilioPricing(
+  brandId: string,
+  country = 'US',
+): Promise<WorkerTwilioPricing> {
+  const payload = await requestJson(
+    `/brands/${encodeURIComponent(brandId)}/twilio-pricing`,
+    { params: { country } },
+  )
+  return payload as WorkerTwilioPricing
+}

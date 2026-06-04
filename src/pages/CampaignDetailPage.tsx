@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, RefreshCw, ScrollText, Trash2 } from 'lucide-react'
+import { ArrowLeft, CheckCheck, MessageSquareReply, MousePointerClick, RefreshCw, ScrollText, Trash2, UserMinus, XCircle } from 'lucide-react'
 import { Card, CardHeader } from '../components/ui/Card'
 import { Button } from '../components/ui/Button'
 import { Modal } from '../components/ui/Modal'
@@ -441,6 +441,77 @@ export function CampaignDetailPage() {
           <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-700">{activeCampaign.message}</p>
         </Card>
       </div>
+
+      {activeCampaign.counters ? (
+        <Card padding="md">
+          <CardHeader
+            title="Engagement"
+            description="Live counters updated by Twilio status &amp; inbound webhooks."
+          />
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-5">
+            <div className="flex items-start gap-3 rounded-lg border border-emerald-100 bg-emerald-50/60 p-4">
+              <CheckCheck className="mt-0.5 h-5 w-5 shrink-0 text-emerald-600" aria-hidden />
+              <div>
+                <p className="text-xs font-medium text-slate-500">Delivered</p>
+                <p className="mt-0.5 text-2xl font-semibold tabular-nums text-emerald-800">
+                  {activeCampaign.counters.delivered.toLocaleString()}
+                </p>
+                {activeCampaign.sent > 0 ? (
+                  <p className="mt-0.5 text-xs tabular-nums text-slate-500">
+                    {Math.round((activeCampaign.counters.delivered / activeCampaign.sent) * 1000) / 10}% of sent
+                  </p>
+                ) : null}
+              </div>
+            </div>
+            <div className="flex items-start gap-3 rounded-lg border border-red-100 bg-red-50/60 p-4">
+              <XCircle className="mt-0.5 h-5 w-5 shrink-0 text-red-500" aria-hidden />
+              <div>
+                <p className="text-xs font-medium text-slate-500">Carrier Failed</p>
+                <p className="mt-0.5 text-2xl font-semibold tabular-nums text-red-800">
+                  {activeCampaign.counters.deliveryFailed.toLocaleString()}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-start gap-3 rounded-lg border border-blue-100 bg-blue-50/60 p-4">
+              <MousePointerClick className="mt-0.5 h-5 w-5 shrink-0 text-blue-600" aria-hidden />
+              <div>
+                <p className="text-xs font-medium text-slate-500">Clicks</p>
+                <p className="mt-0.5 text-2xl font-semibold tabular-nums text-blue-800">
+                  {activeCampaign.counters.clicks.toLocaleString()}
+                </p>
+                {activeCampaign.counters.delivered > 0 ? (
+                  <p className="mt-0.5 text-xs tabular-nums text-slate-500">
+                    {Math.round((activeCampaign.counters.clicks / activeCampaign.counters.delivered) * 1000) / 10}% CTR
+                  </p>
+                ) : null}
+              </div>
+            </div>
+            <div className="flex items-start gap-3 rounded-lg border border-violet-100 bg-violet-50/60 p-4">
+              <MessageSquareReply className="mt-0.5 h-5 w-5 shrink-0 text-violet-600" aria-hidden />
+              <div>
+                <p className="text-xs font-medium text-slate-500">Replies</p>
+                <p className="mt-0.5 text-2xl font-semibold tabular-nums text-violet-800">
+                  {activeCampaign.counters.replies.toLocaleString()}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-start gap-3 rounded-lg border border-orange-100 bg-orange-50/60 p-4">
+              <UserMinus className="mt-0.5 h-5 w-5 shrink-0 text-orange-500" aria-hidden />
+              <div>
+                <p className="text-xs font-medium text-slate-500">Unsubscribes</p>
+                <p className="mt-0.5 text-2xl font-semibold tabular-nums text-orange-800">
+                  {activeCampaign.counters.unsubs.toLocaleString()}
+                </p>
+                {activeCampaign.counters.delivered > 0 ? (
+                  <p className="mt-0.5 text-xs tabular-nums text-slate-500">
+                    {Math.round((activeCampaign.counters.unsubs / activeCampaign.counters.delivered) * 1000) / 10}% unsub rate
+                  </p>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        </Card>
+      ) : null}
 
       <Card padding="md">
         <CardHeader title="Batch progress" description="Parallel workers split the audience into batches." />

@@ -8,6 +8,7 @@ import { Input } from '../components/ui/Input'
 import { EmptyState } from '../components/ui/EmptyState'
 import { DashboardTagModal } from '../components/brands/DashboardTagModal'
 import { useAppData } from '../context/AppDataContext'
+import { fetchWorkerBrandTwilioPricing } from '../services/smsWorkerApi'
 import type { Brand } from '../types'
 
 const emptyBrand: Omit<Brand, 'id'> = {
@@ -19,6 +20,7 @@ const emptyBrand: Omit<Brand, 'id'> = {
   activeCampaignApiUrl: '',
   activeCampaignApiKey: '',
   dashboardTag: '',
+  smsCostPerSegment: undefined,
 }
 
 type TagModalState = {
@@ -41,6 +43,8 @@ export function BrandsPage() {
   const [formError, setFormError] = useState<string | null>(null)
   const [savingBrand, setSavingBrand] = useState(false)
   const [tagModal, setTagModal] = useState<TagModalState | null>(null)
+  const [fetchingPrice, setFetchingPrice] = useState(false)
+  const [priceError, setPriceError] = useState<string | null>(null)
 
   const title = useMemo(() => (editing ? 'Edit brand' : 'Add brand'), [editing])
 
@@ -56,7 +60,12 @@ export function BrandsPage() {
     setFormError(null)
     const { id: _id, ...rest } = b
     void _id
-    setForm({ ...emptyBrand, ...rest, dashboardTag: rest.dashboardTag ?? '' })
+    setForm({
+      ...emptyBrand,
+      ...rest,
+      dashboardTag: rest.dashboardTag ?? '',
+      smsCostPerSegment: rest.smsCostPerSegment,
+    })
     setModalOpen(true)
   }
 
@@ -65,6 +74,27 @@ export function BrandsPage() {
     setEditing(null)
     setForm(emptyBrand)
     setFormError(null)
+    setPriceError(null)
+  }
+
+  const handleFetchTwilioPrice = async (country = 'US') => {
+    const brandId = editing?.id
+    if (!brandId || !workerLinked) return
+    setFetchingPrice(true)
+    setPriceError(null)
+    try {
+      const result = await fetchWorkerBrandTwilioPricing(brandId, country)
+      const price = result.averagePrice ?? result.minPrice
+      if (price != null) {
+        setForm((f) => ({ ...f, smsCostPerSegment: Math.round(price * 100000) / 100000 }))
+      } else {
+        setPriceError('Twilio returned no price data for this country.')
+      }
+    } catch (e) {
+      setPriceError(e instanceof Error ? e.message : 'Failed to fetch Twilio pricing.')
+    } finally {
+      setFetchingPrice(false)
+    }
   }
 
   const shouldPromptForTag = (
@@ -210,6 +240,14 @@ export function BrandsPage() {
                   <dt className="text-xs font-medium text-slate-500">Messaging Service SID</dt>
                   <dd className="mt-0.5 font-mono text-xs text-slate-700">{b.messagingServiceSid}</dd>
                 </div>
+                {b.smsCostPerSegment != null ? (
+                  <div>
+                    <dt className="text-xs font-medium text-slate-500">Cost per SMS segment</dt>
+                    <dd className="mt-0.5 text-xs text-slate-700">
+                      ${b.smsCostPerSegment.toFixed(4)} / segment
+                    </dd>
+                  </div>
+                ) : null}
                 <div>
                   <dt className="text-xs font-medium text-slate-500">ActiveCampaign API URL</dt>
                   <dd className="mt-0.5 truncate text-slate-700">{b.activeCampaignApiUrl}</dd>
@@ -300,6 +338,49 @@ export function BrandsPage() {
               onChange={(e) => setForm((f) => ({ ...f, messagingServiceSid: e.target.value }))}
               placeholder="MG…"
             />
+          </div>
+          <div>
+            <Label htmlFor="sms-cost-per-segment">Cost per SMS segment (USD)</Label>
+            <div className="flex gap-2">
+              <Input
+                id="sms-cost-per-segment"
+                type="number"
+                min="0"
+                step="0.0001"
+                value={form.smsCostPerSegment ?? ''}
+                onChange={(e) => {
+                  const raw = e.target.value
+                  setForm((f) => ({
+                    ...f,
+                    smsCostPerSegment: raw === '' ? undefined : parseFloat(raw) || undefined,
+                  }))
+                }}
+                placeholder="e.g. 0.0079"
+              />
+              {editing && workerLinked ? (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  loading={fetchingPrice}
+                  onClick={() => void handleFetchTwilioPrice('US')}
+                  title="Fetch average SMS price for US from Twilio Pricing API"
+                  className="shrink-0"
+                >
+                  Fetch from Twilio
+                </Button>
+              ) : null}
+            </div>
+            {priceError ? (
+              <p className="mt-1 text-xs text-red-600">{priceError}</p>
+            ) : (
+              <p className="mt-1 text-xs text-slate-500">
+                Used only for pre-send cost estimates.{' '}
+                {editing && workerLinked
+                  ? 'Click "Fetch from Twilio" to auto-fill from your account\'s US rate.'
+                  : 'Save the brand first, then use "Fetch from Twilio" to auto-fill.'}
+              </p>
+            )}
           </div>
           <div className="sm:col-span-2">
             <Label htmlFor="ac-url" required>

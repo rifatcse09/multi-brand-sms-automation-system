@@ -38,6 +38,8 @@ export type Brand = {
   activeCampaignApiKey: string;
   /** ActiveCampaign tag name used for dashboard audience + default campaign tag. */
   dashboardTag?: string;
+  /** Cost charged per SMS segment (in USD). Used for pre-send cost estimates. */
+  smsCostPerSegment?: number;
   createdAt: string;
   updatedAt: string;
 };
