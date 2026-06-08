@@ -84,7 +84,7 @@ function buildFailureGroups(phones: PhoneResult[], total: number): FailureGroupR
 export function CampaignDetailPage() {
   const navigate = useNavigate()
   const { id } = useParams<{ id: string }>()
-  const { campaigns, getBrandName, retryPhone, deleteCampaign } = useAppData()
+  const { campaigns, brands, getBrandName, retryPhone, deleteCampaign } = useAppData()
   const campaign = campaigns.find((c) => c.id === id)
   const [remoteCampaign, setRemoteCampaign] = useState<Campaign | null>(null)
   const [loadingRemote, setLoadingRemote] = useState(false)
@@ -213,6 +213,20 @@ export function CampaignDetailPage() {
       failureGroups: buildFailureGroups(phones, total),
     }
   }, [activeCampaign])
+
+  const costStats = useMemo(() => {
+    if (!activeCampaign || activeCampaign.status !== 'Completed') return null
+    const brand = brands.find((b) => b.id === activeCampaign.brandId)
+    const rate = brand?.smsCostPerSegment
+    if (!rate) return null
+    const phones = activeCampaign.phones ?? []
+    const actualSent = phones.filter((p) => p.status === 'Success').length
+    if (actualSent === 0) return null
+    const msg = activeCampaign.message ?? ''
+    const segments = msg.length === 0 ? 1 : Math.ceil(msg.length / 160)
+    const totalCost = actualSent * segments * rate
+    return { actualSent, segments, rate, totalCost }
+  }, [activeCampaign, brands])
 
   if (!activeCampaign || !outcomeStats) {
     return (
@@ -373,6 +387,23 @@ export function CampaignDetailPage() {
               </p>
             </div>
           </div>
+          {costStats && (
+            <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
+              <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                Estimated send cost
+              </p>
+              <p className="mt-1 text-2xl font-semibold tabular-nums text-slate-900">
+                ${costStats.totalCost.toFixed(2)}
+              </p>
+              <p className="mt-0.5 text-xs text-slate-500">
+                {costStats.actualSent.toLocaleString()} contacts ×{' '}
+                {costStats.segments === 1
+                  ? '1 segment'
+                  : `${costStats.segments} segments`}{' '}
+                × ${costStats.rate.toFixed(4)}/segment
+              </p>
+            </div>
+          )}
           {outcomeStats.failed > 0 ? (
             <div className="mt-6 rounded-lg border border-red-100 bg-red-50/40 p-4">
               <p className="text-xs font-semibold uppercase tracking-wider text-red-900">

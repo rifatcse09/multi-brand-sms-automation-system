@@ -12,12 +12,24 @@ import { ProgressBar } from '../components/ui/ProgressBar'
 import { EmptyState } from '../components/ui/EmptyState'
 import { useAppData } from '../context/AppDataContext'
 import { useDelayedReady } from '../hooks/useDelayedReady'
-import type { CampaignStatus } from '../types'
+import type { Campaign, CampaignStatus } from '../types'
+
+function successRate(c: Campaign) {
+  if (c.total === 0) return null
+  return Math.round((c.sent / c.total) * 1000) / 10
+}
+
+function estCost(c: Campaign, costPerSegment?: number) {
+  if (!costPerSegment || c.sent === 0) return null
+  const msg = c.message ?? ''
+  const segments = msg.length === 0 ? 1 : Math.ceil(msg.length / 160)
+  return c.sent * segments * costPerSegment
+}
 
 export function CampaignListPage() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
-  const { campaigns, getBrandName, setCampaignImportant, deleteCampaign } = useAppData()
+  const { campaigns, brands, getBrandName, setCampaignImportant, deleteCampaign } = useAppData()
   const ready = useDelayedReady()
 
   const initialBrand = searchParams.get('brand')?.trim() || 'all'
@@ -158,11 +170,13 @@ export function CampaignListPage() {
               <Th className="w-10 text-center">⭐</Th>
               <Th>Campaign</Th>
               <Th className="hidden lg:table-cell">Brand</Th>
-              <Th className="text-right">Total</Th>
-              <Th className="text-right">Sent</Th>
-              <Th className="text-right">Failed</Th>
+              <Th className="hidden md:table-cell text-right">Total</Th>
+              <Th className="hidden md:table-cell text-right">Sent</Th>
+              <Th className="hidden md:table-cell text-right">Failed</Th>
+              <Th className="text-right">Success</Th>
+              <Th className="hidden lg:table-cell text-right">Est. Cost</Th>
               <Th>Status</Th>
-              <Th className="hidden md:table-cell">Created</Th>
+              <Th className="hidden xl:table-cell">Created</Th>
               <Th className="w-12 text-center">Delete</Th>
             </tr>
           </thead>
@@ -208,13 +222,29 @@ export function CampaignListPage() {
                   ) : null}
                 </Td>
                 <Td className="hidden text-slate-600 lg:table-cell">{getBrandName(c.brandId)}</Td>
-                <Td className="text-right tabular-nums text-slate-700">{c.total.toLocaleString()}</Td>
-                <Td className="text-right tabular-nums text-slate-700">{c.sent.toLocaleString()}</Td>
-                <Td className="text-right tabular-nums text-slate-700">{c.failed.toLocaleString()}</Td>
+                <Td className="hidden text-right tabular-nums text-slate-700 md:table-cell">{c.total.toLocaleString()}</Td>
+                <Td className="hidden text-right tabular-nums text-slate-700 md:table-cell">{c.sent.toLocaleString()}</Td>
+                <Td className="hidden text-right tabular-nums text-slate-700 md:table-cell">{c.failed.toLocaleString()}</Td>
+                <Td className="text-right">
+                  {(() => {
+                    const rate = successRate(c)
+                    if (rate === null) return <span className="text-slate-400 tabular-nums">—</span>
+                    const color = rate >= 95 ? 'text-emerald-700' : rate >= 80 ? 'text-amber-700' : 'text-rose-700'
+                    return <span className={`tabular-nums font-semibold ${color}`}>{rate}%</span>
+                  })()}
+                </Td>
+                <Td className="hidden text-right lg:table-cell">
+                  {(() => {
+                    const brand = brands.find((b) => b.id === c.brandId)
+                    const cost = estCost(c, brand?.smsCostPerSegment)
+                    if (cost === null) return <span className="text-slate-300">—</span>
+                    return <span className="tabular-nums text-slate-700">${cost.toFixed(2)}</span>
+                  })()}
+                </Td>
                 <Td>
                   <StatusBadge status={c.status} />
                 </Td>
-                <Td className="hidden text-xs text-slate-500 md:table-cell">{formatDate(c.createdAt)}</Td>
+                <Td className="hidden text-xs text-slate-500 xl:table-cell">{formatDate(c.createdAt)}</Td>
                 <Td className="w-12 text-center">
                   <button
                     type="button"

@@ -2392,17 +2392,55 @@ export default {
 
     // Analytics
     if (url.pathname === "/analytics/sent-failed" && request.method === "GET") {
-      const out: Array<{ label: string; sent: number; failed: number }> = [];
-      for (let i = 6; i >= 0; i -= 1) {
-        const dt = new Date(Date.now() - i * 86400000);
-        const day = dt.toISOString().slice(0, 10);
-        const item = (await kvGetJSON<{ sent: number; failed: number }>(env.SMS_KV, key.daily(day))) ?? {
-          sent: 0,
-          failed: 0,
-        };
-        out.push({ label: day.slice(5), sent: item.sent, failed: item.failed });
+      const fromParam = url.searchParams.get("from");
+      const toParam = url.searchParams.get("to");
+      const dates: string[] = [];
+      if (fromParam && toParam) {
+        const from = new Date(fromParam + "T00:00:00Z");
+        const to = new Date(toParam + "T00:00:00Z");
+        const maxDays = 60;
+        for (let d = new Date(from); d <= to && dates.length < maxDays; d.setUTCDate(d.getUTCDate() + 1)) {
+          dates.push(d.toISOString().slice(0, 10));
+        }
+      } else {
+        const rawDays = parseInt(url.searchParams.get("days") ?? "14", 10);
+        const days = Math.min(Math.max(rawDays, 1), 60);
+        for (let i = days - 1; i >= 0; i -= 1) {
+          dates.push(new Date(Date.now() - i * 86400000).toISOString().slice(0, 10));
+        }
+      }
+      const out: Array<{ date: string; label: string; sent: number; failed: number }> = [];
+      for (const day of dates) {
+        const item = (await kvGetJSON<{ sent: number; failed: number }>(env.SMS_KV, key.daily(day))) ?? { sent: 0, failed: 0 };
+        out.push({ date: day, label: day.slice(5), sent: item.sent, failed: item.failed });
       }
       return json({ ok: true, sentVsFailed: out });
+    }
+
+    if (url.pathname === "/analytics/subscriber-trend" && request.method === "GET") {
+      const fromParam = url.searchParams.get("from");
+      const toParam = url.searchParams.get("to");
+      const dates: string[] = [];
+      if (fromParam && toParam) {
+        const from = new Date(fromParam + "T00:00:00Z");
+        const to = new Date(toParam + "T00:00:00Z");
+        const maxDays = 60;
+        for (let d = new Date(from); d <= to && dates.length < maxDays; d.setUTCDate(d.getUTCDate() + 1)) {
+          dates.push(d.toISOString().slice(0, 10));
+        }
+      } else {
+        const rawDays = parseInt(url.searchParams.get("days") ?? "14", 10);
+        const days = Math.min(Math.max(rawDays, 1), 60);
+        for (let i = days - 1; i >= 0; i -= 1) {
+          dates.push(new Date(Date.now() - i * 86400000).toISOString().slice(0, 10));
+        }
+      }
+      const out: Array<{ date: string; label: string; delivered: number; unsubs: number; net: number }> = [];
+      for (const day of dates) {
+        const item = (await kvGetJSON<{ delivered: number; unsubs: number }>(env.SMS_KV, key.subsDaily(day))) ?? { delivered: 0, unsubs: 0 };
+        out.push({ date: day, label: day.slice(5), delivered: item.delivered, unsubs: item.unsubs, net: item.delivered - item.unsubs });
+      }
+      return json({ ok: true, subscriberTrend: out });
     }
 
     if (url.pathname === "/analytics/subscribers-summary" && request.method === "GET") {

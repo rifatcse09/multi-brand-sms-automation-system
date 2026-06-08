@@ -375,10 +375,20 @@ export async function fetchWorkerBrandTagSubscribers(
   return mapSubscriberBrand(payload.subscribers ?? {})
 }
 
-export async function fetchWorkerSentVsFailed() {
-  const payload = await requestJson('/analytics/sent-failed')
+export async function fetchWorkerSentVsFailed(opts: { from: string; to: string } | { days: number } = { days: 14 }) {
+  const params: Record<string, string> = 'from' in opts ? { from: opts.from, to: opts.to } : { days: String(opts.days) }
+  const payload = await requestJson('/analytics/sent-failed', { params })
   return (
-    (payload.sentVsFailed as Array<{ label: string; sent: number; failed: number }> | undefined) ??
+    (payload.sentVsFailed as Array<{ date: string; label: string; sent: number; failed: number }> | undefined) ??
+    []
+  )
+}
+
+export async function fetchWorkerSubscriberTrend(opts: { from: string; to: string } | { days: number } = { days: 14 }) {
+  const params: Record<string, string> = 'from' in opts ? { from: opts.from, to: opts.to } : { days: String(opts.days) }
+  const payload = await requestJson('/analytics/subscriber-trend', { params })
+  return (
+    (payload.subscriberTrend as Array<{ date: string; label: string; delivered: number; unsubs: number; net: number }> | undefined) ??
     []
   )
 }
