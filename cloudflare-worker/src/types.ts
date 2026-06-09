@@ -51,7 +51,7 @@ export type PhoneResult = {
   error?: string;
   twilioSid?: string;
   failedAt?: string;
-  failureSource?: "twilio_rest" | "twilio_callback" | "mock_simulated" | "unknown";
+  failureSource?: "twilio_rest" | "twilio_callback" | "opted_out" | "mock_simulated" | "unknown";
   failureDetail?: string;
 };
 

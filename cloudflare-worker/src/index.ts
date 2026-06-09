@@ -1255,6 +1255,28 @@ async function processSingleMessage(
     return;
   }
 
+  // Skip sending to numbers on the brand opt-out blocklist (replied STOP or
+  // previously triggered error 21610). No Twilio call is made.
+  const isOptedOut = await env.SMS_KV.get(key.brandOptOut(campaign.brandId, msg.phone));
+  if (isOptedOut) {
+    const optedOutRow: PhoneResult = {
+      id: msg.phoneId,
+      phone: msg.phone,
+      status: "Failed",
+      error: "Opted out — recipient previously replied STOP",
+      failureSource: "opted_out",
+      failedAt: now(),
+      failureDetail: [
+        `Time: ${now()}`,
+        "Source: Brand opt-out blocklist (pre-send check).",
+        `Phone ${msg.phone} was found in the opt-out list before the Twilio API was called.`,
+        "No message was sent. This number will be skipped in all future campaigns for this brand.",
+      ].join("\n"),
+    };
+    await recordSendOutcome(env, campaign, msg, optedOutRow, { sent: 0, failed: 1 });
+    return;
+  }
+
   await setPhoneDelivery(env, msg.campaignId, msg.phoneId, {
     state: "inflight",
     at: now(),
@@ -1730,7 +1752,6 @@ export default {
         const campaign = await kvGetJSON<Campaign>(env.SMS_KV, key.campaign(map.campaignId));
         await updateSubscriberDaily(env, campaign?.brandId ?? null, 1, 0);
       } else if (status === "undelivered" || status === "failed") {
-        await incrementCampaignMeta(env, map.campaignId, "deliveryFailed", 1);
         const campaign = await kvGetJSON<Campaign>(env.SMS_KV, key.campaign(map.campaignId));
         const phones = await kvGetJSON<PhoneResult[]>(
           env.SMS_KV,
@@ -1738,19 +1759,28 @@ export default {
         );
         if (campaign && phones) {
           const idx = phones.findIndex((p) => p.id === map.phoneId);
+          // Only count the first failure webhook per recipient to avoid
+          // inflating the counter when Twilio re-delivers the same callback.
+          if (idx < 0 || phones[idx].status !== "Failed") {
+            await incrementCampaignMeta(env, map.campaignId, "deliveryFailed", 1);
+          }
           if (idx >= 0 && phones[idx].status !== "Failed") {
             const errorCode = String(form.get("ErrorCode") || "").trim();
             const errorMessage = String(form.get("ErrorMessage") || "").trim();
             const toVal = String(form.get("To") || "").trim();
-            const summary =
-              errorCode && errorMessage
+            const isOptOut = errorCode === "21610";
+            const summary = isOptOut
+              ? "Opted out — recipient previously replied STOP (21610)"
+              : errorCode && errorMessage
                 ? `Twilio delivery ${errorCode}: ${errorMessage}`
                 : errorMessage
                   ? `${errorMessage} (${status})`
                   : `Twilio carrier status: ${status}`;
             const failureDetail = [
               `Time: ${now()}`,
-              "Source: Twilio status callback (after the message was accepted by the REST API).",
+              isOptOut
+                ? "Source: Twilio opt-out block (21610) — recipient previously replied STOP to a message from this number."
+                : "Source: Twilio status callback (after the message was accepted by the REST API).",
               `MessageSid: ${sid}`,
               `MessageStatus: ${status}`,
               errorCode ? `ErrorCode: ${errorCode}` : null,
@@ -1765,9 +1795,16 @@ export default {
               status: "Failed",
               error: summary,
               failureDetail,
-              failureSource: "twilio_callback",
+              failureSource: isOptOut ? "opted_out" : "twilio_callback",
               failedAt: now(),
             };
+            // Add to brand opt-out blocklist so future campaigns skip this number.
+            if (isOptOut) {
+              await env.SMS_KV.put(
+                key.brandOptOut(campaign.brandId, phones[idx].phone),
+                now(),
+              );
+            }
             const sent = phones.filter((p) => p.status === "Success").length;
             const failed = phones.filter((p) => p.status === "Failed").length;
             const progress =
@@ -1822,6 +1859,10 @@ export default {
         if (isStop) {
           const campaign = await kvGetJSON<Campaign>(env.SMS_KV, key.campaign(lastSent.campaignId));
           await updateSubscriberDaily(env, campaign?.brandId ?? null, 0, 1);
+          // Add to brand opt-out blocklist so future campaigns skip this number.
+          if (campaign?.brandId) {
+            await env.SMS_KV.put(key.brandOptOut(campaign.brandId, from), now());
+          }
         }
       }
 

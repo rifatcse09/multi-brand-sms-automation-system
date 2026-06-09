@@ -24,9 +24,11 @@ function processedCount(c: Campaign | null | undefined) {
 function failureSourceLabel(source?: string) {
   switch (source) {
     case 'twilio_rest':
-      return 'Twilio API (send rejected)'
+      return 'Rejected by Twilio API before sending'
     case 'twilio_callback':
-      return 'Carrier / delivery failed'
+      return 'Carrier rejected after sending'
+    case 'opted_out':
+      return 'Opted out — replied STOP'
     case 'mock_simulated':
       return 'Mock simulated failure'
     default:
@@ -35,7 +37,11 @@ function failureSourceLabel(source?: string) {
 }
 
 function failureGroupLabel(phone: PhoneResult) {
+  if (phone.failureSource === 'opted_out') return 'Opted out — recipient replied STOP'
   const summary = phone.error?.trim()
+  // Backwards-compat: old opted-out rows have failureSource "twilio_callback" but
+  // the error text contains 21610.
+  if (summary?.includes('21610')) return 'Opted out — recipient replied STOP (21610)'
   if (summary) return summary
   return failureSourceLabel(phone.failureSource)
 }
@@ -195,8 +201,17 @@ export function CampaignDetailPage() {
     const total = activeCampaign.total > 0 ? activeCampaign.total : phones.length
     const sentFromPhones = phones.filter((p) => p.status === 'Success').length
     const failedFromPhones = phones.filter((p) => p.status === 'Failed').length
-    const sent = Math.max(sentFromPhones, activeCampaign.sent ?? 0)
-    const failed = Math.max(failedFromPhones, activeCampaign.failed ?? 0)
+    // When phone rows are loaded they are the reconciled source of truth; the
+    // campaign-level aggregates can lag behind (progress endpoint does not
+    // reconcile) so we trust phones directly rather than taking Math.max, which
+    // would keep a stale low number after a progress poll overwrites the field.
+    const sent = phones.length > 0 ? sentFromPhones : Math.max(sentFromPhones, activeCampaign.sent ?? 0)
+    const failed = phones.length > 0 ? failedFromPhones : Math.max(failedFromPhones, activeCampaign.failed ?? 0)
+    const optedOut = phones.filter(
+      (p) =>
+        p.status === 'Failed' &&
+        (p.failureSource === 'opted_out' || p.error?.includes('21610')),
+    ).length
     const pending = Math.max(0, total - sent - failed)
     const resolved = sent + failed
     const pctOf = (n: number) => (total > 0 ? Math.round((n / total) * 1000) / 10 : 0)
@@ -205,6 +220,7 @@ export function CampaignDetailPage() {
       total,
       sent,
       failed,
+      optedOut,
       pending,
       sentPct: pctOf(sent),
       failedPct: pctOf(failed),
@@ -366,12 +382,12 @@ export function CampaignDetailPage() {
               </p>
             </div>
             <div className="rounded-lg border border-slate-100 bg-slate-50/60 p-4">
-              <p className="text-xs font-medium text-slate-500">Sent</p>
+              <p className="text-xs font-medium text-slate-500">Submitted to Carrier</p>
               <p className="mt-1 text-2xl font-semibold tabular-nums text-emerald-800">
                 {outcomeStats.sent.toLocaleString()}
               </p>
               <p className="mt-0.5 text-xs tabular-nums text-slate-500">
-                {outcomeStats.sentPct}% of audience
+                {outcomeStats.sentPct}% of audience · accepted by Twilio
               </p>
             </div>
             <div className="rounded-lg border border-slate-100 bg-slate-50/60 p-4">
@@ -450,6 +466,20 @@ export function CampaignDetailPage() {
               </ul>
             </div>
           ) : null}
+          {outcomeStats.optedOut > 0 ? (
+            <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
+              <p className="text-xs font-semibold uppercase tracking-wider text-amber-900">
+                Compliance notice
+              </p>
+              <p className="mt-1 text-sm text-amber-950">
+                <span className="font-semibold">{outcomeStats.optedOut}</span> recipient
+                {outcomeStats.optedOut === 1 ? ' has' : 's have'} previously replied STOP and{' '}
+                {outcomeStats.optedOut === 1 ? 'was' : 'were'} blocked from receiving this message.
+                {' '}These numbers are now on the opt-out blocklist and will be skipped in all
+                future campaigns for this brand.
+              </p>
+            </div>
+          ) : null}
           {outcomeStats.pending > 0 ? (
             <p className="mt-4 text-xs tabular-nums text-slate-500">
               {outcomeStats.pending.toLocaleString()} pending ({outcomeStats.pendingPct}% of audience)
@@ -477,19 +507,19 @@ export function CampaignDetailPage() {
         <Card padding="md">
           <CardHeader
             title="Engagement"
-            description="Live counters updated by Twilio status &amp; inbound webhooks."
+            description="Live event counters from Twilio status &amp; inbound webhooks. &quot;Confirmed Delivered&quot; requires a carrier receipt — not all carriers return one, so this is a floor, not the total that reached recipients. Carrier Failure Events counts webhook callbacks, not unique recipients."
           />
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-5">
             <div className="flex items-start gap-3 rounded-lg border border-emerald-100 bg-emerald-50/60 p-4">
               <CheckCheck className="mt-0.5 h-5 w-5 shrink-0 text-emerald-600" aria-hidden />
               <div>
-                <p className="text-xs font-medium text-slate-500">Delivered</p>
+                <p className="text-xs font-medium text-slate-500">Confirmed Delivered</p>
                 <p className="mt-0.5 text-2xl font-semibold tabular-nums text-emerald-800">
                   {activeCampaign.counters.delivered.toLocaleString()}
                 </p>
                 {activeCampaign.sent > 0 ? (
                   <p className="mt-0.5 text-xs tabular-nums text-slate-500">
-                    {Math.round((activeCampaign.counters.delivered / activeCampaign.sent) * 1000) / 10}% of sent
+                    {Math.round((activeCampaign.counters.delivered / activeCampaign.sent) * 1000) / 10}% carrier receipt returned
                   </p>
                 ) : null}
               </div>
@@ -497,7 +527,7 @@ export function CampaignDetailPage() {
             <div className="flex items-start gap-3 rounded-lg border border-red-100 bg-red-50/60 p-4">
               <XCircle className="mt-0.5 h-5 w-5 shrink-0 text-red-500" aria-hidden />
               <div>
-                <p className="text-xs font-medium text-slate-500">Carrier Failed</p>
+                <p className="text-xs font-medium text-slate-500">Carrier Failure Events</p>
                 <p className="mt-0.5 text-2xl font-semibold tabular-nums text-red-800">
                   {activeCampaign.counters.deliveryFailed.toLocaleString()}
                 </p>

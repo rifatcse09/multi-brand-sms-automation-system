@@ -38,6 +38,9 @@ export const key = {
   authUser: (email: string) => `auth:user:${email.toLowerCase()}`,
   authSession: (token: string) => `auth:session:${token}`,
   authReset: (email: string) => `auth:reset:${email.toLowerCase()}`,
+  /** Brand-level opt-out blocklist. Key exists → phone has replied STOP or triggered 21610. */
+  brandOptOut: (brandId: string, phone: string) =>
+    `brand:${brandId}:optout:${phone.replace(/\+/g, "")}`,
 } as const;
 
 export const defaultMeta = (): CampaignMeta => ({
