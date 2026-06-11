@@ -67,9 +67,9 @@ export function CampaignListPage() {
   }, [campaigns, brandFilter, statusFilter, importantFilter])
 
   const formatDate = (iso: string) =>
-    new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(
+    new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', dateStyle: 'medium', timeStyle: 'short' }).format(
       new Date(iso),
-    )
+    ) + ' UTC'
   const shortPreview = (text: string) => {
     const words = text.trim().split(/\s+/).filter(Boolean)
     if (words.length <= 8) return text

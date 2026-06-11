@@ -272,10 +272,10 @@ export function CampaignDetailPage() {
   const scheduledLabel =
     activeCampaign.scheduleAtLocal && activeCampaign.scheduleTimezone
       ? `${activeCampaign.scheduleAtLocal.replace('T', ' ')} (${activeCampaign.scheduleTimezone})`
-      : activeCampaign.scheduledAtUtc
-        ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(
+        : activeCampaign.scheduledAtUtc
+        ? new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', dateStyle: 'medium', timeStyle: 'short' }).format(
             new Date(activeCampaign.scheduledAtUtc),
-          )
+          ) + ' UTC'
         : null
 
   const batches = activeCampaign.batches ?? []
@@ -364,8 +364,8 @@ export function CampaignDetailPage() {
                 ? `High-level delivery metrics · live stats updated ${Math.max(
                     0,
                     Math.round((Date.now() - statsUpdatedAt) / 1000),
-                  )}s ago`
-                : 'High-level delivery metrics for this send.'
+                  )}s ago · All times UTC`
+                : 'High-level delivery metrics for this send. All times UTC.'
             }
           />
           {activeCampaign.status === 'Preparing' ? (
@@ -507,8 +507,59 @@ export function CampaignDetailPage() {
         <Card padding="md">
           <CardHeader
             title="Engagement"
-            description="Live event counters from Twilio status &amp; inbound webhooks. &quot;Confirmed Delivered&quot; requires a carrier receipt — not all carriers return one, so this is a floor, not the total that reached recipients. Carrier Failure Events counts webhook callbacks, not unique recipients."
+            description="Live event counters from Twilio status &amp; inbound webhooks. All times UTC. Carrier Failure Events counts webhook callbacks, not unique recipients."
           />
+          {activeCampaign.sent > 0 ? (() => {
+            const confirmed = activeCampaign.counters!.delivered
+            const failed = outcomeStats?.failed ?? 0
+            const noReceipt = Math.max(0, activeCampaign.sent - confirmed - failed)
+            const pct = (n: number) => Math.round((n / activeCampaign.sent) * 10) / 10
+            return (
+              <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
+                <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                  Delivery breakdown — of {activeCampaign.sent.toLocaleString()} submitted to carrier
+                </p>
+                <div className="space-y-2">
+                  <div>
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="font-medium text-emerald-800">Confirmed delivered</span>
+                      <span className="tabular-nums text-emerald-800">
+                        {confirmed.toLocaleString()} <span className="text-slate-400">({pct(confirmed)}%)</span>
+                      </span>
+                    </div>
+                    <div className="mt-1 h-2 overflow-hidden rounded-full bg-slate-200">
+                      <div className="h-full rounded-full bg-emerald-500" style={{ width: `${pct(confirmed)}%` }} />
+                    </div>
+                    <p className="mt-0.5 text-[11px] text-slate-500">Carrier returned a delivery receipt — confirmed minimum floor</p>
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="font-medium text-slate-600">No carrier receipt</span>
+                      <span className="tabular-nums text-slate-600">
+                        {noReceipt.toLocaleString()} <span className="text-slate-400">({pct(noReceipt)}%)</span>
+                      </span>
+                    </div>
+                    <div className="mt-1 h-2 overflow-hidden rounded-full bg-slate-200">
+                      <div className="h-full rounded-full bg-slate-400" style={{ width: `${pct(noReceipt)}%` }} />
+                    </div>
+                    <p className="mt-0.5 text-[11px] text-slate-500">Carrier accepted but sent no status back — not a failure, likely delivered</p>
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="font-medium text-red-700">True failures</span>
+                      <span className="tabular-nums text-red-700">
+                        {failed.toLocaleString()} <span className="text-slate-400">({pct(failed)}%)</span>
+                      </span>
+                    </div>
+                    <div className="mt-1 h-2 overflow-hidden rounded-full bg-slate-200">
+                      <div className="h-full rounded-full bg-red-500" style={{ width: `${Math.max(pct(failed), 0.5)}%` }} />
+                    </div>
+                    <p className="mt-0.5 text-[11px] text-slate-500">Bounced, rejected, or opted-out — carrier confirmed non-delivery</p>
+                  </div>
+                </div>
+              </div>
+            )
+          })() : null}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-5">
             <div className="flex items-start gap-3 rounded-lg border border-emerald-100 bg-emerald-50/60 p-4">
               <CheckCheck className="mt-0.5 h-5 w-5 shrink-0 text-emerald-600" aria-hidden />
@@ -715,7 +766,7 @@ export function CampaignDetailPage() {
               {failureLogPhone.failedAt ? (
                 <div className="flex flex-wrap gap-2">
                   <dt className="font-medium text-slate-500">Recorded</dt>
-                  <dd className="text-xs">{failureLogPhone.failedAt}</dd>
+                  <dd className="text-xs">{failureLogPhone.failedAt} UTC</dd>
                 </div>
               ) : null}
             </dl>
