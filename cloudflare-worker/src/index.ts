@@ -724,28 +724,60 @@ type TwilioSendOutcome =
   | { ok: true; sid?: string }
   | { ok: false; summary: string; detail: string };
 
+type TwilioSendConfig = {
+  accountSid: string;
+  authToken: string;
+  messagingServiceSid: string;
+};
+
+/** Brand KV fields take priority; Worker secrets are the fallback. */
+function resolveTwilioSendConfig(env: Env, brand?: Brand | null): TwilioSendConfig | null {
+  const accountSid = (brand?.twilioAccountSid?.trim() || env.TWILIO_ACCOUNT_SID || "").trim();
+  const authToken = (brand?.twilioAuthToken?.trim() || env.TWILIO_AUTH_TOKEN || "").trim();
+  const messagingServiceSid = (
+    brand?.messagingServiceSid?.trim() || env.TWILIO_MESSAGING_SERVICE_SID || ""
+  ).trim();
+  if (!accountSid || !authToken || !messagingServiceSid) return null;
+  return { accountSid, authToken, messagingServiceSid };
+}
+
+function twilioConfigErrorDetail(env: Env, brand?: Brand | null): string {
+  const resolved = resolveTwilioSendConfig(env, brand);
+  return [
+    `Time: ${now()}`,
+    `SEND_MODE=${env.SEND_MODE || "(unset)"}`,
+    brand
+      ? `Brand: ${brand.id} (${brand.name})`
+      : "Brand: (none — using Worker secrets only)",
+    resolved?.accountSid
+      ? `Account SID: configured (${resolved.accountSid.slice(0, 6)}…)`
+      : "Account SID: missing (set brand.twilioAccountSid or TWILIO_ACCOUNT_SID)",
+    resolved?.authToken ? "Auth token: configured" : "Auth token: missing",
+    resolved?.messagingServiceSid
+      ? `Messaging Service SID: ${resolved.messagingServiceSid}`
+      : "Messaging Service SID: missing (set brand.messagingServiceSid or TWILIO_MESSAGING_SERVICE_SID)",
+    "Campaign sends must route through the brand Messaging Service so 10DLC registration applies.",
+    "Use SEND_MODE=mock to exercise failures without Twilio, or set the secrets for real sends.",
+  ].join("\n");
+}
+
 async function twilioSendWithDetails(
   env: Env,
   to: string,
   body: string,
   statusCallbackUrl?: string,
   idempotencyKey?: string,
+  brand?: Brand | null,
 ): Promise<TwilioSendOutcome> {
-  const sid = env.TWILIO_ACCOUNT_SID;
-  const token = env.TWILIO_AUTH_TOKEN;
-  const mg = env.TWILIO_MESSAGING_SERVICE_SID;
-  if (!sid || !token || !mg) {
+  const cfg = resolveTwilioSendConfig(env, brand);
+  if (!cfg) {
     return {
       ok: false,
-      summary: "Twilio is not configured for this Worker.",
-      detail: [
-        `Time: ${now()}`,
-        `SEND_MODE=${env.SEND_MODE || "(unset)"}`,
-        "Missing one or more: TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_MESSAGING_SERVICE_SID.",
-        "Use SEND_MODE=mock to exercise failures without Twilio, or set the secrets for real sends.",
-      ].join("\n"),
+      summary: "Twilio is not configured for this send.",
+      detail: twilioConfigErrorDetail(env, brand),
     };
   }
+  const { accountSid: sid, authToken: token, messagingServiceSid: mg } = cfg;
   const form = new URLSearchParams();
   form.set("To", to);
   form.set("Body", body);
@@ -1221,6 +1253,8 @@ async function processSingleMessage(
   if (!campaign) return;
   if (campaign.status === "Preparing" || campaign.status === "Scheduled") return;
 
+  const brand = await kvGetJSON<Brand>(env.SMS_KV, key.brand(campaign.brandId));
+
   const priorSend = await wasAlreadySentForCampaign(
     env,
     msg.campaignId,
@@ -1304,6 +1338,7 @@ async function processSingleMessage(
       msg.body,
       statusCallbackUrl,
       idempotencyKey,
+      brand,
     );
     if (out.ok) {
       twilioSid = out.sid;
