@@ -507,7 +507,7 @@ export function CampaignDetailPage() {
         <Card padding="md">
           <CardHeader
             title="Engagement"
-            description="Live event counters from Twilio status &amp; inbound webhooks. All times UTC. Carrier Failure Events counts webhook callbacks, not unique recipients."
+            description="Delivery and engagement metrics aligned with per-recipient phone results. All times UTC."
           />
           {activeCampaign.sent > 0 ? (() => {
             const confirmed = activeCampaign.counters!.delivered
@@ -578,10 +578,15 @@ export function CampaignDetailPage() {
             <div className="flex items-start gap-3 rounded-lg border border-red-100 bg-red-50/60 p-4">
               <XCircle className="mt-0.5 h-5 w-5 shrink-0 text-red-500" aria-hidden />
               <div>
-                <p className="text-xs font-medium text-slate-500">Carrier Failure Events</p>
+                <p className="text-xs font-medium text-slate-500">True Failures</p>
                 <p className="mt-0.5 text-2xl font-semibold tabular-nums text-red-800">
-                  {activeCampaign.counters.deliveryFailed.toLocaleString()}
+                  {outcomeStats.failed.toLocaleString()}
                 </p>
+                {activeCampaign.sent > 0 && outcomeStats.failed > 0 ? (
+                  <p className="mt-0.5 text-xs tabular-nums text-slate-500">
+                    {Math.round((outcomeStats.failed / activeCampaign.sent) * 1000) / 10}% of submitted
+                  </p>
+                ) : null}
               </div>
             </div>
             <div className="flex items-start gap-3 rounded-lg border border-blue-100 bg-blue-50/60 p-4">
@@ -612,11 +617,11 @@ export function CampaignDetailPage() {
               <div>
                 <p className="text-xs font-medium text-slate-500">Unsubscribes</p>
                 <p className="mt-0.5 text-2xl font-semibold tabular-nums text-orange-800">
-                  {activeCampaign.counters.unsubs.toLocaleString()}
+                  {outcomeStats.optedOut.toLocaleString()}
                 </p>
-                {activeCampaign.counters.delivered > 0 ? (
+                {activeCampaign.sent > 0 && outcomeStats.optedOut > 0 ? (
                   <p className="mt-0.5 text-xs tabular-nums text-slate-500">
-                    {Math.round((activeCampaign.counters.unsubs / activeCampaign.counters.delivered) * 1000) / 10}% unsub rate
+                    {Math.round((outcomeStats.optedOut / activeCampaign.sent) * 1000) / 10}% of submitted
                   </p>
                 ) : null}
               </div>

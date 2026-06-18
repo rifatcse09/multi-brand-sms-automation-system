@@ -141,6 +141,8 @@ export type Env = {
   TWILIO_MESSAGING_SERVICE_SID?: string;
   MISSIVE_API_TOKEN?: string;
   MISSIVE_SHADOWLOG_NAME?: string;
+  /** Forward inbound Twilio webhooks here so Missive inbox stays in sync. */
+  MISSIVE_TWILIO_CALLBACK_URL?: string;
   OWNER_PHONE?: string;
   DEFAULT_ADMIN_EMAIL?: string;
   DEFAULT_ADMIN_PASSWORD?: string;

@@ -432,6 +432,8 @@ function maskPhone(phone: string | null): string | null {
   return `${"*".repeat(Math.max(0, clean.length - 4))}${clean.slice(-4)}`;
 }
 
+const MISSIVE_TWILIO_CALLBACK_DEFAULT = "https://callback.missiveapp.com/twilio";
+
 async function missiveShadowLog(env: Env, to: string, body: string) {
   if (!env.MISSIVE_API_TOKEN) return;
   const name = env.MISSIVE_SHADOWLOG_NAME || "ShadowLog";
@@ -449,6 +451,23 @@ async function missiveShadowLog(env: Env, to: string, body: string) {
     },
     body: JSON.stringify(payload),
   });
+}
+
+/** Re-post the raw Twilio inbound payload so Missive inbox integration keeps working. */
+async function forwardTwilioInboundToMissive(form: FormData, callbackUrl: string) {
+  const params = new URLSearchParams();
+  form.forEach((value, key) => {
+    params.append(key, typeof value === "string" ? value : "");
+  });
+  const res = await fetch(callbackUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: params.toString(),
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(`Missive callback HTTP ${res.status}${txt ? `: ${txt.slice(0, 200)}` : ""}`);
+  }
 }
 
 async function getCampaignMeta(env: Env, campaignId: string) {
@@ -1902,6 +1921,9 @@ export default {
       }
 
       void missiveShadowLog(env, from, `Inbound SMS: ${body}`).catch(() => {});
+      const missiveCallback =
+        (env.MISSIVE_TWILIO_CALLBACK_URL || MISSIVE_TWILIO_CALLBACK_DEFAULT).trim();
+      void forwardTwilioInboundToMissive(form, missiveCallback).catch(() => {});
       return new Response(`<?xml version="1.0" encoding="UTF-8"?><Response></Response>`, {
         status: 200,
         headers: { "content-type": "text/xml; charset=utf-8" },
